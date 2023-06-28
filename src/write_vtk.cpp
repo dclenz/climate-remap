@@ -18,7 +18,6 @@
 #include    <diy/io/block.hpp>
 
 #include    "opts.h"
-
 #include    "writer.hpp"
 #include    "cblock.hpp"
 
@@ -528,66 +527,7 @@ void write_vtk_files(
     vector<vec3d>               tensor_pts_index;   // tmesh tensor product extents in index space
     vector<int>                 ntensor_pts;        // number of tensor extent points in each dim
 
-    // package rendering data
-    PrepRenderingData(nvars,
-                      geom_ctrl_pts,
-                      vars_ctrl_pts,
-                      vars_ctrl_data,
-                      tensor_pts_real,
-                      tensor_pts_index,
-                      ntensor_pts,
-                      b,
-                      sci_var,
-                      pt_dim);
-
-    // pad dimensions up to 3
-    dom_dim = b->dom_dim;
-
-    // science variable settings
-    int vardim          = 1;
-    int centering       = 1;
-    int* vardims        = new int[nvars];
-    char** varnames     = new char*[nvars];
-    int* centerings     = new int[nvars];
-    float* vars;
-    for (int i = 0; i < nvars; i++)
-    {
-        vardims[i]      = 1;                                // TODO; treating each variable as a scalar (for now)
-        varnames[i]     = new char[256];
-        centerings[i]   = 1;
-        sprintf(varnames[i], "var%d", i);
-    }
-
-    // write geometry control points
-    char filename[256];
-    sprintf(filename, "geom_control_points_gid_%d.vtk", cp.gid());
-    if (geom_ctrl_pts.size())
-        write_point_mesh(
-            /* const char *filename */                      filename,
-            /* int useBinary */                             0,
-            /* int npts */                                  geom_ctrl_pts.size(),
-            /* float *pts */                                &(geom_ctrl_pts[0].x),
-            /* int nvars */                                 0,
-            /* int *vardim */                               NULL,
-            /* const char * const *varnames */              NULL,
-            /* float **vars */                              NULL);
-
-    // write science variables control points
-    for (auto i = 0; i < nvars; i++)
-    {
-        sprintf(filename, "var%d_control_points_gid_%d.vtk", i, cp.gid());
-        if (vars_ctrl_pts[i].size())
-            write_point_mesh(
-            /* const char *filename */                      filename,
-            /* int useBinary */                             0,
-            /* int npts */                                  vars_ctrl_pts[i].size(),
-            /* float *pts */                                &(vars_ctrl_pts[i][0].x),
-            /* int nvars */                                 nvars,
-            /* int *vardim */                               vardims,
-            /* const char * const *varnames */              varnames,
-            /* float **vars */                              vars_ctrl_data);
-    }
-
+    // Write PointSets
     char input_filename[256];
     char approx_filename[256];
     char errs_filename[256];
@@ -601,68 +541,131 @@ void write_vtk_files(
     write_pointset_vtk(b->errs, errs_filename, sci_var);
     write_pointset_vtk(b->blend, blend_filename, sci_var);
 
-    // write tensor product extents
-    int pts_per_cell = pow(2, dom_dim);
-    int ncells = tensor_pts_real.size() / pts_per_cell;
-    vector<int> cell_types(ncells);
-    for (auto i = 0; i < cell_types.size(); i++)
+    if (b->mfa != nullptr)
     {
-        if (dom_dim == 1)
-            cell_types[i] = VISIT_LINE;
-        else if (dom_dim == 2)
-            cell_types[i] = VISIT_QUAD;
-        else
-            cell_types[i] = VISIT_HEXAHEDRON;
+        // package rendering data
+        PrepRenderingData(nvars,
+                        geom_ctrl_pts,
+                        vars_ctrl_pts,
+                        vars_ctrl_data,
+                        tensor_pts_real,
+                        tensor_pts_index,
+                        ntensor_pts,
+                        b,
+                        sci_var,
+                        pt_dim);
+
+        // pad dimensions up to 3
+        dom_dim = b->dom_dim;
+
+        // science variable settings
+        int vardim          = 1;
+        int centering       = 1;
+        int* vardims        = new int[nvars];
+        char** varnames     = new char*[nvars];
+        int* centerings     = new int[nvars];
+        float* vars;
+        for (int i = 0; i < nvars; i++)
+        {
+            vardims[i]      = 1;                                // TODO; treating each variable as a scalar (for now)
+            varnames[i]     = new char[256];
+            centerings[i]   = 1;
+            sprintf(varnames[i], "var%d", i);
+        }
+
+        // write geometry control points
+        char filename[256];
+        sprintf(filename, "geom_control_points_gid_%d.vtk", cp.gid());
+        if (geom_ctrl_pts.size())
+            write_point_mesh(
+                /* const char *filename */                      filename,
+                /* int useBinary */                             0,
+                /* int npts */                                  geom_ctrl_pts.size(),
+                /* float *pts */                                &(geom_ctrl_pts[0].x),
+                /* int nvars */                                 0,
+                /* int *vardim */                               NULL,
+                /* const char * const *varnames */              NULL,
+                /* float **vars */                              NULL);
+
+        // write science variables control points
+        for (auto i = 0; i < nvars; i++)
+        {
+            sprintf(filename, "var%d_control_points_gid_%d.vtk", i, cp.gid());
+            if (vars_ctrl_pts[i].size())
+                write_point_mesh(
+                /* const char *filename */                      filename,
+                /* int useBinary */                             0,
+                /* int npts */                                  vars_ctrl_pts[i].size(),
+                /* float *pts */                                &(vars_ctrl_pts[i][0].x),
+                /* int nvars */                                 nvars,
+                /* int *vardim */                               vardims,
+                /* const char * const *varnames */              varnames,
+                /* float **vars */                              vars_ctrl_data);
+        }
+
+        // write tensor product extents
+        int pts_per_cell = pow(2, dom_dim);
+        int ncells = tensor_pts_real.size() / pts_per_cell;
+        vector<int> cell_types(ncells);
+        for (auto i = 0; i < cell_types.size(); i++)
+        {
+            if (dom_dim == 1)
+                cell_types[i] = VISIT_LINE;
+            else if (dom_dim == 2)
+                cell_types[i] = VISIT_QUAD;
+            else
+                cell_types[i] = VISIT_HEXAHEDRON;
+        }
+        vector<float> tensor_data(tensor_pts_real.size(), 1.0); // tensor data set to fake value
+        vector<int> conn(tensor_pts_real.size());               // connectivity
+        for (auto i = 0; i < conn.size(); i++)
+            conn[i] = i;
+        vars = &tensor_data[0];
+        sprintf(filename, "tensor_real_gid_%d.vtk", cp.gid());
+        const char* name_tensor ="tensor0";
+
+        // in real space
+        write_unstructured_mesh(
+                /* const char *filename */                      filename,
+                /* int useBinary */                             0,
+                /* int npts */                                  tensor_pts_real.size(),
+                /* float *pts */                                &(tensor_pts_real[0].x),
+                /* int ncells */                                ncells,
+                /* int *celltypes */                            &cell_types[0],
+                /* int *conn */                                 &conn[0],
+                /* int nvars */                                 1,
+                /* int *vardim */                               &vardim,
+                /* int *centering */                            &centering,
+                /* const char * const *varnames */              &name_tensor,
+                /* float **vars */                              &vars);
+
+        // in index space
+        sprintf(filename, "tensor_index_gid_%d.vtk", cp.gid());
+        write_unstructured_mesh(
+                /* const char *filename */                      filename,
+                /* int useBinary */                             0,
+                /* int npts */                                  tensor_pts_index.size(),
+                /* float *pts */                                &(tensor_pts_index[0].x),
+                /* int ncells */                                ncells,
+                /* int *celltypes */                            &cell_types[0],
+                /* int *conn */                                 &conn[0],
+                /* int nvars */                                 1,
+                /* int *vardim */                               &vardim,
+                /* int *centering */                            &centering,
+                /* const char * const *varnames */              &name_tensor,
+                /* float **vars */                              &vars);
+
+        delete[] vardims;
+        for (int i = 0; i < nvars; i++)
+            delete[] varnames[i];
+        delete[] varnames;
+        delete[] centerings;
+        for (int j = 0; j < nvars; j++)
+        {
+            delete[] vars_ctrl_data[j];
+        }
+        delete[] vars_ctrl_data;
     }
-    vector<float> tensor_data(tensor_pts_real.size(), 1.0); // tensor data set to fake value
-    vector<int> conn(tensor_pts_real.size());               // connectivity
-    for (auto i = 0; i < conn.size(); i++)
-        conn[i] = i;
-    vars = &tensor_data[0];
-    sprintf(filename, "tensor_real_gid_%d.vtk", cp.gid());
-    const char* name_tensor ="tensor0";
-
-    // in real space
-    write_unstructured_mesh(
-            /* const char *filename */                      filename,
-            /* int useBinary */                             0,
-            /* int npts */                                  tensor_pts_real.size(),
-            /* float *pts */                                &(tensor_pts_real[0].x),
-            /* int ncells */                                ncells,
-            /* int *celltypes */                            &cell_types[0],
-            /* int *conn */                                 &conn[0],
-            /* int nvars */                                 1,
-            /* int *vardim */                               &vardim,
-            /* int *centering */                            &centering,
-            /* const char * const *varnames */              &name_tensor,
-            /* float **vars */                              &vars);
-
-    // in index space
-    sprintf(filename, "tensor_index_gid_%d.vtk", cp.gid());
-    write_unstructured_mesh(
-            /* const char *filename */                      filename,
-            /* int useBinary */                             0,
-            /* int npts */                                  tensor_pts_index.size(),
-            /* float *pts */                                &(tensor_pts_index[0].x),
-            /* int ncells */                                ncells,
-            /* int *celltypes */                            &cell_types[0],
-            /* int *conn */                                 &conn[0],
-            /* int nvars */                                 1,
-            /* int *vardim */                               &vardim,
-            /* int *centering */                            &centering,
-            /* const char * const *varnames */              &name_tensor,
-            /* float **vars */                              &vars);
-
-    delete[] vardims;
-    for (int i = 0; i < nvars; i++)
-        delete[] varnames[i];
-    delete[] varnames;
-    delete[] centerings;
-    for (int j = 0; j < nvars; j++)
-    {
-        delete[] vars_ctrl_data[j];
-    }
-    delete[] vars_ctrl_data;
 }
 
 int main(int argc, char ** argv)

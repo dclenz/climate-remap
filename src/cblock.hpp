@@ -175,6 +175,7 @@ struct CBlock : public BlockBase<T>
     template <typename V>
     void read_mpas_data(
             const   diy::Master::ProxyWithLink& cp,
+                    string      mpasfile,
                     MFAInfo&    mfa_info,
                     DomainArgs& args)
     {        
@@ -186,33 +187,39 @@ struct CBlock : public BlockBase<T>
         // Read HDF5 data into STL vectors
         vector<vector<V>>           coords;
         vector<vector<vector<int>>> conn_mats;
-        vector<vector<V>>           depth_vecs;
+        vector<vector<V>>           depth_vecs, salinity_vecs, temp_vecs;
         int                         ncells = 0;
 
         const int ndatasets = 3;
-        string filename = args.infile;
+        string filename = mpasfile;
         string coords_name = "tstt/nodes/coordinates";
         vector<string> connect_names;
-        vector<string> depth_names;
+        vector<string> var_names;
         conn_mats.resize(ndatasets);
         depth_vecs.resize(ndatasets);
+        salinity_vecs.resize(ndatasets);
+        temp_vecs.resize(ndatasets);
         connect_names.push_back("tstt/elements/Polygon5/connectivity");
         connect_names.push_back("tstt/elements/Polygon6/connectivity");
         connect_names.push_back("tstt/elements/Polygon7/connectivity");
-        depth_names.push_back("tstt/elements/Polygon5/tags/bottomDepth");
-        depth_names.push_back("tstt/elements/Polygon6/tags/bottomDepth");
-        depth_names.push_back("tstt/elements/Polygon7/tags/bottomDepth");
+        var_names.push_back("tstt/elements/Polygon5/tags/");
+        var_names.push_back("tstt/elements/Polygon6/tags/");
+        var_names.push_back("tstt/elements/Polygon7/tags/");
 
         read_hdf5_dataset_2d<double>(filename, coords_name, coords, true);
         for (int n = 0; n < ndatasets; n++)
         {
-            
-            read_hdf5_dataset_1d<double>(filename, depth_names[n], depth_vecs[n], true);
+            // read each variable into buffers
+            read_hdf5_dataset_1d<double>(filename, var_names[n]+"bottomDepth", depth_vecs[n], true);
+            read_hdf5_dataset_1d<double>(filename, var_names[n]+"salinity", salinity_vecs[n], true);
+            read_hdf5_dataset_1d<double>(filename, var_names[n]+"temperature", temp_vecs[n], true);
+
+            // read cell connectivity
             read_hdf5_dataset_2d<int>(filename, connect_names[n], conn_mats[n], true);
             ncells += conn_mats[n].size();
         }
 
-        input = new mfa::PointSet<T>(dom_dim, mfa_info.model_dims(), ncells);
+        mpas_input = new mfa::PointSet<T>(dom_dim, mfa_info.model_dims(), ncells);
         
         int ofst = 0;
         VectorX<T> centroid(3);
@@ -233,22 +240,24 @@ struct CBlock : public BlockBase<T>
                 centroid = (1.0/cellsize) * centroid;
 
                 // Fill centroid coordinates and depth associated to the cell
-                input->domain(ofst+i, 0) = centroid(0);
-                input->domain(ofst+i, 1) = centroid(1);
-                input->domain(ofst+i, 2) = centroid(2);
-                input->domain(ofst+i, 3) = depth_vecs[n][i];
+                mpas_input->domain(ofst+i, 0) = centroid(0);
+                mpas_input->domain(ofst+i, 1) = centroid(1);
+                mpas_input->domain(ofst+i, 2) = centroid(2);
+                mpas_input->domain(ofst+i, 3) = depth_vecs[n][i];
+                mpas_input->domain(ofst+i, 4) = salinity_vecs[n][i];
+                mpas_input->domain(ofst+i, 5) = temp_vecs[n][i];                
             }
 
             // Move the offset for the next class of polygons
             ofst += conn_mats[n].size();
         }
 
-        input->set_domain_params();
+        mpas_input->set_domain_params();
         this->setup_MFA(cp, mfa_info);
 
         // Find block bounds for coordinates and values
-        bounds_mins = input->domain.colwise().minCoeff();
-        bounds_maxs = input->domain.colwise().maxCoeff();
+        bounds_mins = mpas_input->domain.colwise().minCoeff();
+        bounds_maxs = mpas_input->domain.colwise().maxCoeff();
         core_mins   = bounds_mins.head(dom_dim);
         core_maxs   = bounds_maxs.head(dom_dim);
 
@@ -261,6 +270,7 @@ struct CBlock : public BlockBase<T>
     template <typename V>               // floating point type used in HDF5 file (assumed to be only one)
     void read_roms_data(
             const   diy::Master::ProxyWithLink& cp,
+                    string      romsfile,
                     MFAInfo&    mfa_info,
                     DomainArgs& args)
     {        
@@ -279,7 +289,7 @@ struct CBlock : public BlockBase<T>
         V                   c_depth = 0;
 
         // roms
-        string filename = args.infile;
+        string filename = romsfile;
         string coords_name = "tstt/nodes/coordinates";
         string cell_connect_name = "tstt/elements/Quad4/connectivity";
         string node_depth_name = "tstt/nodes/tags/bathymetry";
@@ -292,9 +302,9 @@ struct CBlock : public BlockBase<T>
         cellsize = conn_mat[0].size();
 
         // Initialize input PointSet from buffers
-        input = new mfa::PointSet<T>(dom_dim, mfa_info.model_dims(), ncells);
+        roms_input = new mfa::PointSet<T>(dom_dim, mfa_info.model_dims(), ncells);
         VectorX<T> centroid(3);
-        for (size_t i = 0; i < input->npts; i++)
+        for (size_t i = 0; i < roms_input->npts; i++)
         {
             centroid.setZero();
             c_depth = 0;
@@ -309,25 +319,111 @@ struct CBlock : public BlockBase<T>
             centroid = (1.0/cellsize) * centroid;
             c_depth = (1.0/cellsize) * c_depth;
 
-            input->domain(i, 0) = centroid[0];
-            input->domain(i, 1) = centroid[1];
-            input->domain(i, 2) = centroid[2];
-            input->domain(i, 3) = c_depth;
+            roms_input->domain(i, 0) = centroid[0];
+            roms_input->domain(i, 1) = centroid[1];
+            roms_input->domain(i, 2) = centroid[2];
+            roms_input->domain(i, 3) = c_depth;
         }
-        input->set_domain_params();
+        roms_input->set_domain_params();
 
         // initialize MFA models (geometry, vars, etc)
-        this->setup_MFA(cp, mfa_info);
+        // this->setup_MFA(cp, mfa_info);
 
         // Find block bounds for coordinates and values
-        bounds_mins = input->domain.colwise().minCoeff();
-        bounds_maxs = input->domain.colwise().maxCoeff();
+        bounds_mins = roms_input->domain.colwise().minCoeff();
+        bounds_maxs = roms_input->domain.colwise().maxCoeff();
         core_mins   = bounds_mins.head(dom_dim);
         core_maxs   = bounds_maxs.head(dom_dim);
 
         // debug
         mfa::print_bbox(core_mins, core_maxs, "Core");
         mfa::print_bbox(bounds_mins, bounds_maxs, "Bounds");
+    }
+
+    void remap(
+        const diy::Master::ProxyWithLink&   cp,
+        MFAInfo&    info)
+    {
+        mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted, false);
+
+        VectorX<T> roms_mins = roms_input->mins();
+        VectorX<T> roms_maxs = roms_input->maxs();
+        VectorX<T> mpas_mins = mpas_input->mins();
+        VectorX<T> mpas_maxs = mpas_input->maxs();
+        VectorX<T> mpas_diff = mpas_maxs - mpas_mins;
+
+        shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
+        new_param->param_list.resize(roms_input->npts, dom_dim);
+        // Rescale domain values to the interval [0,1], column-by-column
+        for (size_t k = 0; k < dom_dim; k++)
+        {
+            new_param->param_list.col(k) = (roms_input->domain.col(k).array() - mpas_mins(k)) * (1/mpas_diff(k));
+        }
+
+        mpas_approx = new mfa::PointSet<T>(new_param, mpas_input->model_dims());
+
+        mfa->Decode(*mpas_approx, false);
+
+        input = mpas_input;
+        mpas_input = nullptr;
+        approx = mpas_approx;
+        mpas_approx = nullptr;
+    }
+
+
+    void print_knots_ctrl(const mfa::MFA_Data<T>& model) const
+    {
+        VectorXi tot_nctrl_pts_dim = VectorXi::Zero(model.dom_dim);        // number contrl points per dim.
+        size_t tot_nctrl_pts = 0;                                        // total number of control points
+
+        for (auto j = 0; j < model.ntensors(); j++)
+        {
+            tot_nctrl_pts_dim += model.tmesh.tensor_prods[j].nctrl_pts;
+            tot_nctrl_pts += model.tmesh.tensor_prods[j].nctrl_pts.prod();
+        }
+        // print number of control points per dimension only if there is one tensor
+        if (model.ntensors() == 1)
+            cerr << "# output ctrl pts     = [ " << tot_nctrl_pts_dim.transpose() << " ]" << endl;
+        cerr << "tot # output ctrl pts = " << tot_nctrl_pts << endl;
+
+        cerr << "# output knots        = [ ";
+        for (auto j = 0 ; j < model.tmesh.all_knots.size(); j++)
+        {
+            cerr << model.tmesh.all_knots[j].size() << " ";
+        }
+        cerr << "]" << endl;
+    }
+
+    void print_model(const diy::Master::ProxyWithLink& cp)    // error was computed
+    {
+        if (!mfa)
+        {
+            fmt::print("gid = {}: No MFA found.\n", cp.gid());
+            return;
+        }
+
+        fmt::print("gid = {}\n", cp.gid());
+
+        // geometry
+        fmt::print("---------------- geometry model ----------------\n");
+        print_knots_ctrl(mfa->geom());
+        fmt::print("------------------------------------------------\n");
+
+        // science variables
+        fmt::print("\n----------- science variable models ------------\n");
+        for (int i = 0; i < mfa->nvars(); i++)
+        {
+            fmt::print("-------------------- var {} --------------------\n", i);
+            print_knots_ctrl(mfa->var(i));
+            fmt::print("------------------------------------------------\n");
+            // ray_stats.print_var(i);
+            // fmt::print("------------------------------------------------\n");
+        }
+        
+        // ray_stats.print_max();
+        // fmt::print("------------------------------------------------\n");
+        // fmt::print("# input points        = {}\n", input->npts);
+        // fmt::print("compression ratio     = {:.2f}\n", this->compute_compression());
     }
 
 
