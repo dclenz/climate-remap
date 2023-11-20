@@ -45,7 +45,6 @@ struct MOABReader
     // face_cell_map[CellType][i] is a vector containing all cells of type CellType that contain face i
     // all indices are global
     map<string, map<int, vector<int>>> face_cell_map; 
-    // map<string, int> dataset_ids;
 
     // Each string key is a cell type name (or "node")
     // Each value is vector of datasets, so 
@@ -55,20 +54,8 @@ struct MOABReader
     MOABReader(string filename_) :
         filename(filename_)
     {
-        // fmt::print("TODO: Currently hardcoding max_id=97504!\n\n");
-        // max_id = 97504;
         max_id = get_max_id(filename);
         elements.resize(max_id);
-
-        // using namespace HighFive;
-        // cout << "Found attributes: " << endl;
-        // File datafile(filename.c_str(), File::ReadWrite);
-        // Group tstt = datafile.getGroup("tstt");
-        // vector<string> anames = tstt.listAttributeNames();
-        // for (auto name : anames)
-        // {
-        //     cout << name << endl;
-        // }
 
         read_vertices();
     }
@@ -310,47 +297,40 @@ struct MOABReader
         }
 
 
-        // Sanity check
-        set<string> no_parents; // list of cell types with no parent cells
-        for (auto face_name : enames)
-        {
-            for (int i = 0; i < num_cells(face_name); i++)
-            {
-                // Check if there are any parents for this face
-                if (face_cell_map[face_name].count(i) == 0)
-                {
-                    // If this is the first cell, mark the cell type as having no parents
-                    // This will hapen for full-dimensional cells
-                    if (i == 0)
-                    {
-                        no_parents.insert(face_name);
-                    } 
-                    else
-                    {
-                        // if this is not the first cell, but this face type has not previously
-                        // been marked as having no parents, then something is wrong.
-                        // This means there are some faces with parents (namely, the first), and 
-                        // some without. This should not happen.
-                        if (no_parents.count(face_name) == 0)
-                        {
-                            cerr << face_name << " " << i << " does not have parent cells, but other cells of this type do" << endl;
-                            cerr << "This should not happen. Exiting" << endl;
-                            exit(1);
-                        }
-                    }
+        //  Don't think this sanity check makes sense as written 
+        //
+        // // Sanity check
+        // set<string> no_parents; // list of cell types with no parent cells
+        // for (auto face_name : enames)
+        // {
+        //     for (int i = 0; i < num_cells(face_name); i++)
+        //     {
+        //         // Check if there are any parents for this face
+        //         if (face_cell_map[face_name].count(i) == 0)
+        //         {
+        //             // If this is the first cell, mark the cell type as having no parents
+        //             // This will hapen for full-dimensional cells
+        //             if (i == 0)
+        //             {
+        //                 no_parents.insert(face_name);
+        //             } 
+        //             else
+        //             {
+        //                 // if this is not the first cell, but this face type has not previously
+        //                 // been marked as having no parents, then something is wrong.
+        //                 // This means there are some faces with parents (namely, the first), and 
+        //                 // some without. This should not happen.
+        //                 if (no_parents.count(face_name) == 0)
+        //                 {
+        //                     cerr << face_name << " " << i << " does not have parent cells, but other cells of this type do" << endl;
+        //                     cerr << "This should not happen. Exiting" << endl;
+        //                     exit(1);
+        //                 }
+        //             }
 
-                    continue; // skip to next face_id
-                }
-
-                // if (face_cell_map[face_name][i].size() == 0 || face_cell_map[face_name][i].size() > 2)
-                // {
-                //     cerr << "face_cell_map contains a face with incorrect parent counts." << endl;
-                //     cerr << "Face Name: " << face_name << endl;
-                //     cerr << "Face ID: " << i << endl;
-                //     cerr << "Num Parents: " << face_cell_map[face_name][i].size() << endl;
-                //     exit(1);                    
-                // }
-            }
+        //             continue; // skip to next face_id
+        //         }
+        //     }
         }
 
         cout << "Cell types with no parent cells are: ";
@@ -370,21 +350,10 @@ struct MOABReader
 
     void read_cell_data(string cell_name, string data_name)
     {
+        // read cell data into buffer
         vector<V> data_vec;
         string tag_name = "tstt/elements/" + cell_name + "/tags/" + data_name;
         read_hdf5_dataset_1d<V>(filename, tag_name, data_vec, true);
-
-        // // Update map of dataset names-->IDs
-        // auto id_it = dataset_ids.find(data_name);
-        // if (id_it == dataset_ids.end())
-        // {
-        //     // Dataset with this name has not been read before, so add it
-        //     int ndatasets = dataset_ids.size();
-        //     dataset_ids[data_name] = ndatasets;
-
-        //     // Search again (successfully now) for iterator
-        //     id_it = dataset_ids.find(data_name);
-        // }
 
         // If 'data' does not have a map for given cell_name yet, default construct one
         if (data.count(cell_name) == 0)
@@ -551,8 +520,7 @@ struct CBlock : public BlockBase<T>
         mr.read_cell_data("Polyhedron8", "Temperature3d");
         mr.build_face_cell_map();
 
-        // int num_surface_faces = 0;
-        // vector<vector<T>> surface_face_centroids;
+        // Create lists of surface faces and the 3D cells that contain them
         int p6_start = mr.start_ids["Polygon6"];
         vector<int> surface_face_ids;
         vector<int> surface_parent_ids;
@@ -578,12 +546,12 @@ struct CBlock : public BlockBase<T>
             }
         }
 
+        // Create MFA PointSet to hold all data
         int num_surface_faces = surface_face_ids.size();
         int num_polyhedra = mr.num_cells("Polyhedron8");
-
-        // Create MFA PointSet to hold all data
         mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, num_surface_faces + num_polyhedra);
 
+        // Data structures for reading cell data
         vector<T> centroid(3, 0);
         vector<T> vertex_coords;
         vector<int> faces;
@@ -597,6 +565,7 @@ struct CBlock : public BlockBase<T>
             centroid.assign(3, 0);
             cell_vertices.clear();
 
+            // Get vertices of face
             int face_id = surface_face_ids[i];
             verts = mr.get_faces(face_id);
             for (auto v : verts)
@@ -604,22 +573,32 @@ struct CBlock : public BlockBase<T>
                 cell_vertices.insert(v);
             }
 
+            // Compute face centroid
             int num_vertices = cell_vertices.size();
-            if (num_vertices != 6) {cerr << "BAD VERTICES" << endl; exit(1);}
+            if (num_vertices != 6) {cerr << "BAD VERTICES" << endl; exit(1);}   // we expect the faces to be hexagonal
             for (auto v : cell_vertices)
             {
                 vertex_coords = mr.get_coords(v);
+                
+                // Compute bounding box to cover all MPAS vertices, not just their centroids
+                // The depth levels that define the knot distribution are taken from the MPAS
+                // data file, so we need to make sure that each of these depth levels is inside
+                // our bounding box. If the bounding box was set from centroids only, then the
+                // lowest or highest depths might lie outside the box.
                 if (vertex_coords[0] < mins[0]) mins[0] = vertex_coords[0];
                 if (vertex_coords[0] > maxs[0]) maxs[0] = vertex_coords[0];
                 if (vertex_coords[1] < mins[1]) mins[1] = vertex_coords[1];
                 if (vertex_coords[1] > maxs[1]) maxs[1] = vertex_coords[1];
                 if (vertex_coords[2] < mins[2]) mins[2] = vertex_coords[2];
                 if (vertex_coords[2] > maxs[2]) maxs[2] = vertex_coords[2];
+
+                // Compute centroid
                 centroid[0] += vertex_coords[0] / num_vertices;
                 centroid[1] += vertex_coords[1] / num_vertices;
                 centroid[2] += vertex_coords[2] / num_vertices;
             }
 
+            // Add to PointSet with variable data
             mpas_input->domain(i, 0) = centroid[0];
             mpas_input->domain(i, 1) = centroid[1];
             mpas_input->domain(i, 2) = centroid[2];
@@ -634,6 +613,9 @@ struct CBlock : public BlockBase<T>
             centroid.assign(3, 0); // Fill with all zeros
             cell_vertices.clear();
 
+            // Get vertices of cell
+            // Use a Set to hold vertices because they will be duplicated as 
+            // we loop of each face of the cell. (Set de-duplicates for us)
             faces = mr.get_faces("Polyhedron8", i);
             for (auto face_id : faces)
             {
@@ -644,10 +626,17 @@ struct CBlock : public BlockBase<T>
                 }
             }
 
+            // Compute cell centroid
             int num_vertices = cell_vertices.size();
             for (auto v : cell_vertices)
             {
                 vertex_coords = mr.get_coords(v);
+
+                // Compute bounding box to cover all MPAS vertices, not just their centroids
+                // The depth levels that define the knot distribution are taken from the MPAS
+                // data file, so we need to make sure that each of these depth levels is inside
+                // our bounding box. If the bounding box was set from centroids only, then the
+                // lowest or highest depths might lie outside the box.
                 if (vertex_coords[0] < mins[0]) mins[0] = vertex_coords[0];
                 if (vertex_coords[0] > maxs[0]) maxs[0] = vertex_coords[0];
                 if (vertex_coords[1] < mins[1]) mins[1] = vertex_coords[1];
@@ -658,8 +647,8 @@ struct CBlock : public BlockBase<T>
                 centroid[1] += vertex_coords[1] / num_vertices;
                 centroid[2] += vertex_coords[2] / num_vertices;
             }
-            // centroid = (1.0/cell_vertices.size()) * centroid;
 
+            // Add to PointSet with variable data
             mpas_input->domain(num_surface_faces + i, 0) = centroid[0];
             mpas_input->domain(num_surface_faces + i, 1) = centroid[1];
             mpas_input->domain(num_surface_faces + i, 2) = centroid[2];
@@ -705,14 +694,12 @@ struct CBlock : public BlockBase<T>
                 cout << "Updating zmax" << endl;
                 maxs(2) = roms_maxs(2);
             }
-
-            // mpas_input->set_domain_params(core_mins, core_maxs);
         }
 
+        // Set parametrization
         mpas_input->set_domain_params(mins, maxs);
 
-
-        // Compute parametrization and set up MFA
+        // Set up MFA from user-specified options
         this->setup_MFA(cp, mfa_info);
 
         // Find block bounds for coordinates and values
@@ -735,16 +722,11 @@ struct CBlock : public BlockBase<T>
         VectorXi model_dims(1);
         model_dims << 3;          // geometry, bathymetry, salinity, temperature
 
+        // Only reading vertex locations
         MOABReader<V> mr(filename);
-        // mr.read_cells("Quad4");
-        // mr.read_cells("Polygon6");
-        // mr.read_cells("Polyhedron8");
-        // mr.read_cell_data("Polyhedron8", "salinity");
-        // mr.read_cell_data("Polyhedron8", "temperature");
 
-        // Create MFA PointSet to hold all data
+        // Create MFA PointSet and add vertices
         roms_input = new mfa::PointSet<T>(dom_dim, model_dims, mr.num_verts());
-
         for (int i = 0; i < roms_input->npts; i++)
         {
             roms_input->domain(i, 0) = mr.coords[i][0];
@@ -765,64 +747,6 @@ struct CBlock : public BlockBase<T>
         mfa::print_bbox(core_mins, core_maxs, "ROMS Core");
         mfa::print_bbox(bounds_mins, bounds_maxs, "ROMS Bounds");
     }
-
-    // template <typename V>
-    // void read_moab_cell_data_3d(
-    //         const   diy::Master::ProxyWithLink& cp,
-    //                 string filename)
-    // {
-    //     int max_id = 97504;
-    //     vector<
-
-    //     vector<vector<int>> cell_faces;
-    //     cell_face_names = "tstt/elements/Polyhedron8/connectivity";
-    //     read_hd5_dataset_2d<int>(filename, cell_name, cell_faces, true);
-
-    //     read_hdf5_dataset_2d<double>(filename, coords_name, coords, true);
-    //     read_hdf5_dataset_2d<int>(filename, quad_conn_name, quad_conn, true);
-    //     read_hdf5_dataset_2d<int>(filename, hex_conn_name, hex_conn, true);
-
-    //     int ncells = cell_faces.size();
-    //     int nquads = quad_conn.size();
-    //     int nhexes  = hex_conn.size();
-
-    //     int quad_start_id = 34161;
-    //     int hex_start_id = 73243;
-
-    //     mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, ncells);
-
-    //     int nfaces = 8;
-    //     int nv_quad = 4;
-    //     int nv_hex = 6;
-    //     for (int i = 0; i < ncells; i++)
-    //     {
-    //         for (int j = 0; j < nfaces; j++)
-    //         {
-    //             faceID = cell_faces[i][j];
-    //             if (faceID >= quad_start_id && faceID < quad_start_id + nquads)
-    //             {
-    //                 faceId -= quad_start_id;
-    //                 for (intk = 0; k < nv_quad; k++)
-    //                 {
-
-    //                 }
-    //             }
-    //             else if (face_id >= hex_start_id && face_id < hex_start_id + nhexes)
-    //             {
-
-    //             }
-    //             else
-    //             {
-    //                 cerr << "ERROR: Face ID out of range." << endl;
-    //                 cerr << "       face_id=" << face_id << endl;
-    //                 cerr << "       quad_start_id=" << quad_start_id << ", nquads=" << nquads << endl;
-    //                 cerr << "       hex_start_id=" << hex_start_id << ", nhexes=" << nhexes << endl;
-    //                 exit(1);
-    //             }
-    //         }
-    //     }
-    // }
-
 
     template <typename V>
     void read_mpas_data(
@@ -949,7 +873,7 @@ struct CBlock : public BlockBase<T>
         npts = coords.size();
 
         // Initialize input PointSet from buffers
-        roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts, roms_grid);
+        roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
         for (size_t i = 0; i < roms_input->npts; i++)
         {
             roms_input->domain(i, 0) = coords[i][0];
@@ -958,9 +882,6 @@ struct CBlock : public BlockBase<T>
             roms_input->domain(i, 3) = depth_vec[i];
         }
         roms_input->set_domain_params();
-
-        // initialize MFA models (geometry, vars, etc)
-        // this->setup_MFA(cp, mfa_info);
 
         // Find block bounds for coordinates and values
         bounds_mins = roms_input->domain.colwise().minCoeff();
@@ -985,99 +906,19 @@ struct CBlock : public BlockBase<T>
 
         vector<T> refBottomDepth = depth2;
 
-        int degree = mfa->var(0).p(0);
-        int nknots = refBottomDepth.size() + 2*(degree + 1);
-        // int mind = mfa_data.min_dim;
-        // int maxd = mfa_data.max_dim;
         auto dom_mins = mpas_input->mins();
         auto dom_maxs = mpas_input->maxs();
-        // cout << "min_dim: " << mind << ", max_dim: " << maxd << endl;
-        cout << "mins: " << mpas_input->mins();
-        cout << "maxs: " << mpas_input->maxs();
-
         vector<T> zknots(refBottomDepth.size());
-        // for (auto depth : refBottomDepth)
         for (int i = 0; i < refBottomDepth.size(); i++)
         {
             T zk = (-1*refBottomDepth[i] - dom_mins(2)) / (dom_maxs(2) - dom_mins(2));
-            cout << "depth = " << refBottomDepth[i] << endl;
-            cout << "zk    = " << zk << endl;
             zknots[refBottomDepth.size() - 1 - i] = zk;
         }
 
-        vector<T> zeroknots = vector<T>(degree + 1, 0);
-        vector<T> oneknots = vector<T>(degree + 1, 1.0);
-        vector<T> knots;
-        knots.insert(knots.end(), zeroknots.begin(), zeroknots.end());
-        knots.insert(knots.end(), zknots.begin(), zknots.end());
-        knots.insert(knots.end(), oneknots.begin(), oneknots.end());
-
-        cout << "expected nknots: " << nknots << endl;
-        cout << "actual nknots: " << knots.size() << endl;
-        cout << "knots: " << endl;
-        for (auto k : knots)
-        {
-            cout << k << endl;
-        }
-        cout << endl;
-
-                // int nknots0 = mfa_data.tmesh.all_knots[0].size();
-                // int nknots1 = mfa_data.tmesh.all_knots[1].size();
-                // vector<T> knots0(nknots0);
-                // vector<T> knots1(nknots1);
-                // cout << "nknots0: " << nknots0 << endl;
-                // cout << "nknots1: " << nknots1 << endl;
-                // for (int i = 0; i < degree + 1; i++)
-                // {
-                //     knots0[i] = 0.0;
-                //     knots0[nknots0 - i - 1] = 1.0;
-
-                //     knots1[i] = 0.0;
-                //     knots1[nknots1 - i - 1] = 1.0;
-                // }
-
-
-                // cout << "AA" << endl;
-                // int nspans = nknots0 - 2*(degree+1) + 1;
-                // cout << nspans << endl;
-                // T dk = 1.0 / (nspans);
-                // cout << dk << endl;
-                // for (int i = 0; i < nspans-1; i++)
-                // {
-                //     cout << degree + 1 + i << endl;
-                //     knots0[degree + 1 + i] = dk*(i+1);
-                // }
-
-
-                // nspans = nknots1 - 2*(degree+1) + 1;
-                // dk = 1.0 / (nspans);
-                // for (int i = 0; i < nspans-1; i++)
-                // {
-                //     knots1[degree + 1 + i] = dk*(i+1);
-                // }
-
-                // cout << "knots0:" << endl;
-                // for (auto k : knots0)
-                // {
-                //     cout << k << " ";
-                // }
-                // cout << endl;
-                // cout << "knots1:" << endl;
-                // for (auto k : knots1)
-                // {
-                //     cout << k << " ";
-                // }
-                // cout << endl;
-
-                // vector<vector<T>> allknots(3);
-                // allknots[0] = knots0;
-                // allknots[1] = knots1;
-                // allknots[2] = knots;
-
         vector<vector<T>> allknots(3);
-        allknots[0] = mfa->var(0).tmesh.all_knots[0];
-        allknots[1] = mfa->var(1).tmesh.all_knots[1];
-        allknots[2] = knots;
+        allknots[0] = mfa->var(0).tmesh.all_knots[0];   // leave unchanged
+        allknots[1] = mfa->var(1).tmesh.all_knots[1];   // leave unchanged
+        allknots[2] = mfa->pinKnots(zknots, mfa->var(0).p(0));
 
         mfa->setKnots(allknots);
         mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted);
@@ -1088,18 +929,21 @@ struct CBlock : public BlockBase<T>
         VectorX<T> mpas_maxs = mpas_input->maxs();
         VectorX<T> mpas_diff = mpas_maxs - mpas_mins;
 
+        // Compute parametrization of ROMS points in terms of MPAS domain
         shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
         new_param->param_list.resize(roms_input->npts, dom_dim);
-        // Rescale domain values to the interval [0,1], column-by-column
         for (size_t k = 0; k < dom_dim; k++)
         {
             new_param->param_list.col(k) = (roms_input->domain.col(k).array() - mpas_mins(k)) * (1/mpas_diff(k));
         }
 
+        // Set parametrization object for the PointSet we will decode into
         mpas_approx = new mfa::PointSet<T>(new_param, mpas_input->model_dims());
 
+        // Evaluate MFA
         mfa->Decode(*mpas_approx, false);
 
+        // Move pointers around for visualizing in Paraview
         input = mpas_input;
         mpas_input = nullptr;
         approx = mpas_approx;
