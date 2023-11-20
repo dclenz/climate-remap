@@ -211,12 +211,20 @@ using namespace std;
 
         if (input == "roms" || input == "mpas" || input == "remap")
         {
-            if (dom_dim != 2)
+            if (dom_dim == 2)
             {
-                cerr << "dom_dim must be 2 to run mpas/roms example" << endl;
+                model_dims = {3, 1, 1, 1};
+            }
+            else if (dom_dim == 3)
+            {
+                model_dims = {3, 1, 1};
+            }
+            else
+            {
+                cerr << "ERROR: Incorrect dom_dim" << endl;
                 exit(1);
             }
-            model_dims = {3, 1, 1, 1};
+
             d_args.updateModelDims(model_dims);
         }
 

@@ -24,7 +24,6 @@
 #include "opts.h"
 #include "example-setup.hpp"
 #include "cblock.hpp"
-#include "parser.hpp"
 
 using namespace std;
 using B = CBlock<real_t>;
@@ -34,6 +33,8 @@ int main(int argc, char** argv)
     // initialize MPI
     diy::mpi::environment  env(argc, argv);     // equivalent of MPI_Init(argc, argv)/MPI_Finalize()
     diy::mpi::communicator world;               // equivalent of MPI_COMM_WORLD
+    int mem_blocks  = -1;                       // everything in core
+    int num_threads = 1;                        // needed in order to do timing
 
     // default command line arguments
     int         pt_dim          = 3;        // dimension of input points
@@ -41,22 +42,17 @@ int main(int argc, char** argv)
     int         scalar          = 1;        // flag for scalar or vector-valued science variables (0 == multiple scalar vars)
     int         geom_degree     = 1;        // degree for geometry (same for all dims)
     int         vars_degree     = 4;        // degree for science variables (same for all dims)
-    int         ndomp           = 100;      // input number of domain points (same for all dims)
+    int         ndomp           = 0;      // input number of domain points (same for all dims)
     int         ntest           = 0;        // number of input test points in each dim for analytical error tests
     int         geom_nctrl      = -1;       // input number of control points for geometry (same for all dims)
     vector<int> vars_nctrl      = {11};     // initial # control points for all science variables (default same for all dims)
     string      input           = "sinc";   // input dataset
-    real_t      rot             = 0.0;      // rotation angle in degrees
-    real_t      twist           = 0.0;      // twist (waviness) of domain (0.0-1.0)
-    real_t      noise           = 0.0;      // fraction of noise
     int         structured      = 1;        // input data format (bool 0/1)
     int         rand_seed       = -1;       // seed to use for random data generation (-1 == no randomization)
     real_t      regularization  = 0;        // smoothing parameter for models with non-uniform input density (0 == no smoothing)
     int         reg1and2        = 0;        // flag for regularizer: 0 = regularize only 2nd derivs. 1 = regularize 1st and 2nd
     int         verbose         = 1;        // MFA verbosity (0 = no extra output)
-    int         strong_sc       = 1;        // strong scaling (bool 0 or 1, 0 = weak scaling)
     int         weighted        = 0;        // Use NURBS weights (0/1)
-    real_t      ghost           = 0.1;      // amount of ghost zone overlap as a factor of block size (0.0 - 1.0)
     int         tot_blocks      = 1;        // 
     int         adaptive        = 0;        // do analytical encode (0/1)
     real_t      e_threshold     = 1e-1;     // error threshold for adaptive fitting
@@ -82,8 +78,8 @@ int main(int argc, char** argv)
     ops >> opts::Option('y', "rand_seed",   rand_seed,  " seed for random point generation (-1 = no randomization, default)");
     ops >> opts::Option('b', "regularization", regularization, "smoothing parameter for models with non-uniform input density");
     ops >> opts::Option('k', "reg1and2",    reg1and2,   " regularize both 1st and 2nd derivatives (if =1) or just 2nd (if =0)");
-    ops >> opts::Option('z' ,"romsfile",     romsfile, "");
-    ops >> opts::Option('z', "mpasfile",     mpasfile, "");
+    ops >> opts::Option('z' ,"romsfile",     romsfile,  " file path for roms data file");
+    ops >> opts::Option('z', "mpasfile",     mpasfile,  " file path for mpas data file");
 
 
     if (!ops.parse(argc, argv) || help)
@@ -92,9 +88,6 @@ int main(int argc, char** argv)
             std::cout << ops;
         return 1;
     }
-
-    int mem_blocks  = -1;                       // everything in core
-    int num_threads = 1;                        // needed in order to do timing
 
     // print input arguments
     echo_mfa_settings("simple remap test", dom_dim, pt_dim, scalar, geom_degree, geom_nctrl, vars_degree, vars_nctrl,
@@ -114,14 +107,11 @@ int main(int argc, char** argv)
     diy::ContiguousAssigner   assigner(world.size(), tot_blocks);
 
     // set global domain bounds and decompose
-    Bounds<real_t> dom_bounds(dom_dim);
-    for (int i = 0; i < dom_bounds.min.dimension(); i++)
-    {
-        dom_bounds.min[i] = 0.0;
-        dom_bounds.max[i] = 1.0;
-    }
+    Bounds<real_t> domain(dom_dim);
+    domain.min = vector<real_t>(dom_dim, 0);
+    domain.max = vector<real_t>(dom_dim, 1);
     
-    Decomposer<real_t> decomposer(dom_dim, dom_bounds, tot_blocks);
+    Decomposer<real_t> decomposer(dom_dim, domain, tot_blocks);
     decomposer.decompose(world.rank(),
                          assigner,
                          [&](int gid, const Bounds<real_t>& core, const Bounds<real_t>& bounds, const Bounds<real_t>& domain, const RCLink<real_t>& link)
@@ -136,20 +126,17 @@ int main(int argc, char** argv)
     MFAInfo     mfa_info(dom_dim, verbose);
     DomainArgs  d_args(dom_dim, model_dims);
     setup_args(dom_dim, pt_dim, model_dims, geom_degree, geom_nctrl, vars_degree, vars_nctrl,
-                input, "", ndomp, structured, rand_seed, rot, twist, noise,
+                input, "", ndomp, structured, rand_seed, 0, 0, 0,
                 reg1and2, regularization, adaptive, verbose, mfa_info, d_args);
-    // master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
-    // {
-    //     b->read_roms_data<double>(cp, romsfile, mfa_info, d_args);
-    //     b->read_mpas_data<double>(cp, mpasfile, mfa_info, d_args);
-    // });
 
     double encode_time = MPI_Wtime();
     if (input=="roms")
     {
         master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
         {
-            b->read_roms_data<double>(cp, romsfile, mfa_info, d_args);
+            if (dom_dim == 2) b->read_roms_data<real_t>(cp, romsfile);
+            else if (dom_dim == 3) b->read_roms_data_3d<real_t>(cp, romsfile);
+            // b->read_roms_data_3d<double>(cp, romsfile);
             b->input = b->roms_input;
             b->roms_input = nullptr;
         });
@@ -158,17 +145,29 @@ int main(int argc, char** argv)
     {
         master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
         {
-            b->read_mpas_data<double>(cp, mpasfile, mfa_info, d_args);
+            if (dom_dim == 2) b->read_mpas_data<real_t>(cp, mpasfile, mfa_info);
+            else if (dom_dim == 3) b->read_mpas_data_3d<real_t>(cp, mpasfile, mfa_info);
             b->input = b->mpas_input;
             b->mpas_input = nullptr;
+
+            b->mfa->FixedEncode(*b->input, mfa_info.regularization, mfa_info.reg1and2, mfa_info.weighted);
+            
+            vector<int> grid_size = {50, 50, 100};
+            // b->decode_block_grid(cp, grid_size);
+            b->decode_block(cp, false);
+            // b->range_error(cp, true, false);
         });
     }
     else if (input=="remap")
     {
         master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
         {
-            b->read_roms_data<double>(cp, romsfile, mfa_info, d_args);
-            b->read_mpas_data<double>(cp, mpasfile, mfa_info, d_args);
+            b->read_roms_data_3d<double>(cp, romsfile);
+
+            VectorX<real_t> mins = b->roms_input->mins();
+            VectorX<real_t> maxs = b->roms_input->maxs();
+            b->read_mpas_data_3d<double>(cp, mpasfile, mfa_info, mins, maxs);
+
             b->remap(cp, mfa_info);
         });        
     }
@@ -178,38 +177,6 @@ int main(int argc, char** argv)
         exit(0);
     }
     encode_time = MPI_Wtime() - encode_time;
-
-
-    // // compute the MFA
-    // double encode_time = MPI_Wtime();
-    // master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
-    // { 
-    //     b->remap(cp, mfa_info);
-
-    //     // b->app
-    // });
-    // encode_time = MPI_Wtime() - encode_time;
-
-    // // Decode onto original point locations or grid
-    // double decode_time = MPI_Wtime();
-    // if (error)
-    // {
-    //     fprintf(stderr, "\nDecoding at original point locations\n");
-    //     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
-    //     { 
-    //         b->range_error(cp, true, false);
-    //     });
-    //     decode_time = MPI_Wtime() - decode_time;
-    // }
-    // else if (opts.decode_grid.size() == dom_dim)
-    // {
-    //     fprintf(stderr, "\nDecoding on regular grid of size %s\n", mfa::print_vec(opts.decode_grid).c_str());
-    //     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
-    //     {
-    //         b->decode_block_grid(cp, opts.decode_grid);
-    //     });
-    //     decode_time = MPI_Wtime() - decode_time;
-    // }
 
     // print results
     fprintf(stderr, "\n------- Final block results --------\n");
