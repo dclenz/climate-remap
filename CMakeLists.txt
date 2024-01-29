@@ -97,23 +97,20 @@ if                          (HighFive_INCLUDE_DIR)
     message                 ("HighFive_INCLUDE_DIR = " ${HighFive_INCLUDE_DIR})
 endif                       ()
 
-# MFA (top-level include; i.e. <path-to-mfa>/include, not <path-to-mfa>/include/mfa)
-if                          (MFA_INCLUDE_DIR)
-    message                 ("MFA_INCLUDE_DIR = " ${MFA_INCLUDE_DIR})
-    add_definitions         (-DMFA_NO_WEIGHTS)
-    message                 ("Weights are disabled for MFA")
-else                        (MFA_INCLUDE_DIR)
-    message                 (FATAL_ERROR "Could not find MFA")
+# MFA
+if                          (NOT DEFINED MFA_PATH AND DEFINED ENV{MFA_PATH})
+    set                     (MFA_PATH $ENV{MFA_PATH})
 endif                       ()
+add_definitions             (-DMFA_NO_WEIGHTS)
 
-# Include dirs: mfa, cppoptlib, diy, eigen, mpi
+# Include dirs
 set                         (CMAKE_INCLUDE_SYSTEM_FLAG_CXX "-isystem")
-include_directories         (SYSTEM ${MFA_INCLUDE_DIR}
-                            ${MFA_INCLUDE_DIR}/cppoptlib/include
-                            ${MFA_INCLUDE_DIR}/diy/include
-                            ${MFA_INCLUDE_DIR}/eigen3
-                            ${MPI_INCLUDE_PATH}
-                            )
+include_directories         (${MFA_PATH}/include
+                            ${MFA_PATH}/include/cppoptlib/include
+                            ${MFA_PATH}/include/diy/include
+                            ${MFA_PATH}/include/eigen3
+                            ${MFA_PATH}/include/HighFive/include
+                            SYSTEM ${MPI_C_INCLUDE_PATH})
 
 # Libraries
 set                         (libraries
