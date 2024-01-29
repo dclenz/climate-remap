@@ -1,15 +1,17 @@
-project                     (mfa)
-cmake_minimum_required      (VERSION 3.1)
+project                     (mfa-remap)
+cmake_minimum_required      (VERSION 3.12)
 
 option                      (wrapped_mpi    "MPI compiler wrapper requires no further MPI libs, true/false (default false)" OFF     )
-option                      (mfa_thread     "tbb, kokkos, sycl, or serial (default serial)"                                 serial  )
-option                      (s3d_infile     "Path/filename of s3d dataset (for unit testing)"                                       )
-option                      (python         "Build Python bindings, true/false (default false)"                             OFF     )
-option                      (eigen_thread   "Use OpenMP for Eigen threading, true/false (default false)"                    OFF     )
-option                      (OPENMP_LIBRARY "OpenMP library if not found automatically (optional)"                                  )
 
 # C++11
-set                         (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+if                          (NOT DEFINED CMAKE_CXX_STANDARD)
+    set                     (CMAKE_CXX_STANDARD 11)
+endif                       ()
+
+set                         (CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# ignore variadic args warning (no other good solution)
+set                         (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-varargs")
 
 # Default to Release
 if                          (NOT CMAKE_BUILD_TYPE)
@@ -20,68 +22,74 @@ endif                       (NOT CMAKE_BUILD_TYPE)
 # MPI
 if                          (NOT wrapped_mpi)
     find_package            (MPI REQUIRED)
-    set                     (libraries ${libraries} ${MPI_C_LIBRARIES} ${MPI_CXX_LIBRARIES})
-endif                       ()
-
-# MFA threading model
-if                          (mfa_thread MATCHES "tbb")
-    message                 ("Using TBB threading")
-    add_definitions         (-DMFA_TBB)
-    find_package            (TBB QUIET)
-    find_path               (TBB_INCLUDE_DIR        tbb/tbb.h)
-    find_library            (TBB_LIBRARY NAMES      tbb)
-    if                      (TBB_INCLUDE_DIR AND TBB_LIBRARY)
-        include_directories ("${TBB_INCLUDE_DIR}")
-        set                 (libraries ${libraries} ${TBB_LIBRARY})
-        message             ("Found TBB in ${TBB_INCLUDE_DIR} and in ${TBB_LIBRARY}")
-    else                    (TBB_INCLUDE_DIR AND TBB_LIBRARY)
-        message             (FATAL_ERROR "Could not find TBB")
-    endif                   ()
-else                        ()
-    message                 ("Using no threading (serial)")
-    add_definitions         (-DMFA_SERIAL)
-endif                       ()
-
-# Eigen threading (requires OpenMP to be available)
-if                          (eigen_thread)
-    find_package            (OpenMP)
-    message                 ("Using OpenMP for Eigen")
-    add_definitions         (-DEIGEN_OPENMP)
-    if                      (APPLE)
-        set                 (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Xclang -fopenmp")
-        if                  (${OPENMP_CXX_FOUND})
-            set             (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lomp")
-        elseif              (DEFINED OPENMP_INCLUDE_DIRS AND DEFINED OPENMP_LIBRARY)
-            include_directories (${OPENMP_INCLUDE_DIRS})
-            set             (libraries ${libraries} ${OPENMP_LIBRARY})
-            message         ("Using user-provided OpenMP headers and library: ${OPENMP_INCLUDE_DIRS} ${OPENMP_LIBRARY}")
-        else                ()
-            message         ("Error: cannot find OpenMP and OPENMP_INCLUDE_DIRS or OPENMP_LIBRARY is not set")
-            message         (FATAL_ERROR "Either provide OPENMP_INCLUDE_DIRS and OPENMP_LIBRARY explicitly or disable eigen_thread")
-        endif               ()
-    else                    ()
-        set                     (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp")
-    endif                   ()
+    set                     (libraries MPI::MPI_C)
 endif                       ()
 
 # Threads
 find_package                (Threads)
 
-# HDF5
-if                          (HDF5_LIBRARY AND HDF5_INCLUDE_DIR)
-    message                 ("HDF5_LIBRARY = " ${HDF5_LIBRARY})
-    message                 ("HDF5_INCLUDE_DIR = " ${HDF5_INCLUDE_DIR})
+# DIY
+option                      (build_examples "" OFF)
+option                      (build_tests "" OFF)
+add_subdirectory            (ext/diy)
+set                         (libraries ${libraries} diy)
+
+# fmt
+option                      (FMT_INSTALL "" OFF)
+add_subdirectory            (ext/fmt)
+set                         (libraries ${libraries} fmt::fmt)
+
+# Moab
+if                          (NOT DEFINED MOAB_PATH AND DEFINED ENV{MOAB_PATH})
+    set                     (MOAB_PATH $ENV{MOAB_PATH})
+endif                       ()
+
+if                          (MOAB_PATH)
+    message                 ("Found MOAB_PATH")
+    set                     (MOAB_LIBRARY ${MOAB_PATH}/lib/libMOAB.so)
+    set                     (MOAB_IMESH_LIBRARY ${MOAB_PATH}/lib/libiMesh.so)
+    set                     (MOAB_INCLUDE_DIR ${MOAB_PATH}/include)
+    add_definitions         (-DMOAB_PATH)
 else                        ()
-    message                 ("Looking for HDF5")
-    find_package            (HDF5)
-    set                     (HDF5_LIBRARY ${HDF5_C_LIBRARY_hdf5})
+    message                 ("Looking for Moab")
+    find_package            (moab REQUIRED)
+endif                       ()
+message                     ("MOAB_LIBRARY = ${MOAB_LIBRARY}")
+message                     ("MOAB_IMESH_LIBRARY = ${MOAB_IMESH_LIBRARY}")
+message                     ("MOAB_INCLUDE_DIR = ${MOAB_INCLUDE_DIR}")
+set                         (libraries ${libraries} ${MOAB_LIBRARY} ${MOAB_IMESH_LIBRARY})
+include_directories         (SYSTEM ${MOAB_INCLUDE_DIR})
+
+# HDF5
+if                          (NOT DEFINED HDF5_PATH AND DEFINED ENV{HDF5_PATH})
+    set                     (HDF5_PATH $ENV{HDF5_PATH})
+endif                       ()
+
+if                          (HDF5_PATH)
+    set                     (HDF5_LIBRARY ${HDF5_PATH}/lib/libhdf5.so)
+    set                     (HDF5_HL_LIBRARY ${HDF5_PATH}/lib/libhdf5_hl.so)
+    set                     (HDF5_HL_INCLUDE_DIR ${HDF5_PATH}/include)
+  message                   ("HDF5_LIBRARY = " ${HDF5_LIBRARY})
+  message                   ("HDF5_HL_LIBRARY = " ${HDF5_HL_LIBRARY})
+  message                   ("HDF5_INCLUDE_DIR = " ${HDF5_INCLUDE_DIR})
+  message                   ("Z_LIBRARY = " ${Z_LIBRARY})
+  set                       (HDF5_LIBRARY ${HDF5_HL_LIBRARY} ${HDF5_LIBRARY} ${Z_LIBRARY})
+else                        ()
+  message                   ("Looking for HDF5")
+  find_package              (HDF5 REQUIRED COMPONENTS C HL)
+  message                   ("HDF5_C_LIBRARIES = " ${HDF5_C_LIBRARIES})
+  message                   ("HDF5_HL_LIBRARIES = " ${HDF5_HL_LIBRARIES})
+  message                   ("HDF5_C_LIBRARY_hdf5 = " ${HDF5_C_LIBRARY_hdf5})
+  message                   ("HDF5_C_LIBRARY_z = " ${HDF5_C_LIBRARY_z})
+  message                   ("HDF5_INCLUDE_DIR = " ${HDF5_INCLUDE_DIR})
+  set                       (HDF5_LIBRARY ${HDF5_C_LIBRARIES} ${HDF5_HL_LIBRARIES} ${HDF5_C_LIBRARY_hdf5} ${HDF5_C_LIBRARY_z})
 endif                       ()
 set                         (libraries ${libraries} ${HDF5_LIBRARY})
 include_directories         (SYSTEM ${HDF5_INCLUDE_DIR})
 
-# zlib
-find_package 		        (ZLIB)
-set 			            (libraries ${libraries} ${ZLIB_LIBRARIES})
+# # zlib
+# find_package 		        (ZLIB)
+# set 			            (libraries ${libraries} ${ZLIB_LIBRARIES})
 
 # HighFive
 if                          (HighFive_INCLUDE_DIR)
@@ -116,20 +124,16 @@ set                         (libraries
 
 # Subdirectories
 add_subdirectory            (src)
-if                          (python)
-    add_subdirectory        (include/pybind11)
-    add_subdirectory        (python)
-endif                       ()
 
-# Install the headers
-file                        (GLOB DEPLOY_FILES_AND_DIRS "${PROJECT_SOURCE_DIR}/include/*")
-foreach                     (ITEM ${DEPLOY_FILES_AND_DIRS})
-   if                       (IS_DIRECTORY "${ITEM}")
-      list                  (APPEND DIRS_TO_DEPLOY "${ITEM}")
-   else                     ()
-      list                  (APPEND FILES_TO_DEPLOY "${ITEM}")
-   endif                    ()
-endforeach                  ()
-install                     (FILES ${FILES_TO_DEPLOY} DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
-install                     (DIRECTORY ${DIRS_TO_DEPLOY} DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
+# # Install the headers
+# file                        (GLOB DEPLOY_FILES_AND_DIRS "${PROJECT_SOURCE_DIR}/include/*")
+# foreach                     (ITEM ${DEPLOY_FILES_AND_DIRS})
+#    if                       (IS_DIRECTORY "${ITEM}")
+#       list                  (APPEND DIRS_TO_DEPLOY "${ITEM}")
+#    else                     ()
+#       list                  (APPEND FILES_TO_DEPLOY "${ITEM}")
+#    endif                    ()
+# endforeach                  ()
+# install                     (FILES ${FILES_TO_DEPLOY} DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
+# install                     (DIRECTORY ${DIRS_TO_DEPLOY} DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
 
