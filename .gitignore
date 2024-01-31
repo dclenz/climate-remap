@@ -1,3 +1,7 @@
+# Spack build objects
+spack-build-*
+spack-configure-*
+
 **/build
 
 # Byte-compiled / optimized / DLL files
