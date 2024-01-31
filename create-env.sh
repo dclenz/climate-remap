@@ -23,17 +23,25 @@ spack add mfa-remap
 
 # install everything in environment
 echo "installing dependencies in environment"
-spack install
+spack install mfa
+spack install highfive
+spack install moab
+
+# set build flags
+echo "setting flags for building moab-example"
+export MFA_PATH=`spack location -i mfa`
+export HIGHFIVE_PATH=`spack location -i highfive`
+export MOAB_PATH=`spack location -i moab`
+
+echo "installing mfa-remap"
+spack install mfa-remap
+export MFA_REMAP_PATH=`spack location -i mfa-remap`
 
 # reset the environment (workaround for spack behavior)
 spack env deactivate
 spack env activate $SPACKENV
 
-# set build flags
-echo "setting flags for building moab-example"
-export MFA_PATH=`spack location -i mfa`
-export MOAB_PATH=`spack location -i moab`
-export MFA_REMAP_PATH=`spack location -i moab-example`
+
 
 # set LD_LIBRARY_PATH
 echo "setting flags for running moab-example"
