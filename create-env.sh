@@ -17,9 +17,9 @@ spack env activate $SPACKENV
 spack develop mfa@master~tests~examples build_type=RelWithDebInfo
 spack add mfa
 
-# add moab-example in develop mode
-spack develop moab-example@main build_type=Debug
-spack add moab-example
+# add mfa-remap in develop mode
+spack develop mfa-remap@master
+spack add mfa-remap
 
 # install everything in environment
 echo "installing dependencies in environment"
