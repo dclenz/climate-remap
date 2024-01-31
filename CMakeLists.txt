@@ -92,9 +92,8 @@ include_directories         (SYSTEM ${HDF5_INCLUDE_DIR})
 # set 			            (libraries ${libraries} ${ZLIB_LIBRARIES})
 
 # HighFive
-if                          (HighFive_INCLUDE_DIR)
-    include_directories     (SYSTEM ${HighFive_INCLUDE_DIR})
-    message                 ("HighFive_INCLUDE_DIR = " ${HighFive_INCLUDE_DIR})
+if                          (NOT DEFINED HIGHFIVE_PATH AND DEFINED ENV{HIGHFIVE_PATH})
+    set                     (HIGHFIVE_PATH $ENV{HIGHFIVE_PATH})
 endif                       ()
 
 # MFA
@@ -109,7 +108,7 @@ include_directories         (${MFA_PATH}/include
                             ${MFA_PATH}/include/cppoptlib/include
                             ${MFA_PATH}/include/diy/include
                             ${MFA_PATH}/include/eigen3
-                            ${MFA_PATH}/include/HighFive/include
+                            ${HIGHFIVE_PATH}/include/
                             SYSTEM ${MPI_C_INCLUDE_PATH})
 
 # Libraries
