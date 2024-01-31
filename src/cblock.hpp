@@ -331,14 +331,14 @@ struct MOABReader
         //             continue; // skip to next face_id
         //         }
         //     }
-        }
+        // }
 
-        cout << "Cell types with no parent cells are: ";
-        for (auto name : no_parents)
-        {
-            cout << name << " ";
-        }
-        cout << endl;
+        // cout << "Cell types with no parent cells are: ";
+        // for (auto name : no_parents)
+        // {
+        //     cout << name << " ";
+        // }
+        // cout << endl;
     }
 
     template<typename AT>
