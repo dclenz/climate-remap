@@ -25,10 +25,12 @@
 #include    <highfive/H5DataSpace.hpp>
 #include    <highfive/H5File.hpp>
 
+#include    "moab/Core.hpp"
+
 #include    "domain_args.hpp"
 
 using namespace std;
-
+using namespace moab;
 
 template <typename V>
 struct MOABReader
@@ -58,6 +60,9 @@ struct MOABReader
         elements.resize(max_id);
 
         read_vertices();
+
+        // Get MOAB instance
+        Interface* mb = new( std::nothrow ) Core;
     }
 
     template <typename DT>
