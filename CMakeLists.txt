@@ -101,6 +101,7 @@ if                          (NOT DEFINED MFA_PATH AND DEFINED ENV{MFA_PATH})
     set                     (MFA_PATH $ENV{MFA_PATH})
 endif                       ()
 add_definitions             (-DMFA_NO_WEIGHTS)
+add_definitions             (-DMFA_SERIAL)
 
 # Include dirs
 set                         (CMAKE_INCLUDE_SYSTEM_FLAG_CXX "-isystem")

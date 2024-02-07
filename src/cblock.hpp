@@ -57,6 +57,7 @@ struct MBReader
 
     void loadMesh(string filename_)
     {
+        cout << "MBReader: Reading file " << filename_ << endl;
         filename = filename_;
         rval = mb->load_mesh(filename.c_str()); MB_CHK_ERR_RET(rval);
 
@@ -896,6 +897,61 @@ struct CBlock : public BlockBase<T>
         mfa::print_bbox(mins, maxs, "MPAS Custom");
         mfa::print_bbox(core_mins, core_maxs, "MPAS Core");
         mfa::print_bbox(bounds_mins, bounds_maxs, "MPAS Bounds");
+    }
+
+    template <typename V>
+    void read_roms_data_3d_mb(
+            const   diy::Master::ProxyWithLink& cp,
+                    string filename)
+    {
+        const bool decodeAtVertices = false;
+
+        VectorXi model_dims(1);
+        model_dims(0) = 3;      // geometric coordinates only
+
+        MBReader<V> mbr;
+        mbr.loadMesh(filename);
+
+        int npts = 0;
+        V coord[3];
+        int i = 0;
+        if (decodeAtVertices)
+        {
+            npts = mbr.vertices.size();
+            roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
+            for (auto it = mbr.vertices.begin(), end = mbr.vertices.end(); it != end; ++it, ++i)
+            {
+                mbr.mb->get_coords(&(*it), 1, coord);
+                roms_input->domain(i, 0) = coord[0];
+                roms_input->domain(i, 1) = coord[1];
+                roms_input->domain(i, 2) = coord[2];
+            }
+        }
+        else
+        {
+            npts = mbr.elements.size();
+            roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
+            for (auto it = mbr.elements.begin(), end = mbr.elements.end(); it != end; ++it, ++i)
+            {
+                mbr.mb->get_coords(&(*it), 1, coord);
+                roms_input->domain(i, 0) = coord[0];
+                roms_input->domain(i, 1) = coord[1];
+                roms_input->domain(i, 2) = coord[2];
+            }
+        }
+
+        // Compute input parametrization
+        roms_input->set_domain_params();
+
+        // Find block bounds for coordinates and values
+        bounds_mins = roms_input->domain.colwise().minCoeff();
+        bounds_maxs = roms_input->domain.colwise().maxCoeff();
+        core_mins   = bounds_mins.head(dom_dim);
+        core_maxs   = bounds_maxs.head(dom_dim);
+
+        // debug
+        mfa::print_bbox(core_mins, core_maxs, "ROMS Core");
+        mfa::print_bbox(bounds_mins, bounds_maxs, "ROMS Bounds");
     }
 
     template <typename V>
