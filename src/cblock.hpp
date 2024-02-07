@@ -38,6 +38,7 @@ struct MBReader
     Interface* mb;
     Range vertices;
     Range elements;
+    vector<EntityHandle> bdryHexs;   // hexagonal faces on the domain boundary
 
     string filename;
     vector<V> coords;
@@ -70,10 +71,22 @@ struct MBReader
         rval = mb->get_entities_by_dimension(0, 3, elements); MB_CHK_ERR_RET(rval);
 
         // Get surface facets
-        rval = mb->get_entities_by_type(0, MBQUAD, quads); MB_CHK_ERR_RET(rval);
-        for (auto it = quads.begin(), end = quads.end(); it != end; ++it)
+        Range hexs;
+        vector<EntityHandle> neighbors;
+        rval = mb->get_entities_by_type(0, MBPOLYGON, hexs); MB_CHK_ERR_RET(rval);
+        for (auto it = hexs.begin(), end = hexs.end(); it != end; ++it)
         {
-            mb->get_adjacencies(  , 1, 3, false)
+            neighbors.clear();
+            mb->get_adjacencies( &(*it) , 1, 3, false, neighbors);
+            if (neighbors.size() == 1)
+            {
+                bdryHexs.push_back(*it);
+            }
+            else if (neighbors.size() == 0)
+            {
+                cerr << "ERROR: Found hex face with no parent cells" << endl;
+                exit(1);
+            }
         }
     }
 
@@ -584,7 +597,7 @@ struct CBlock : public BlockBase<T>
 
         VectorXi model_dims(3);
         model_dims << 3, 1, 1;          // geometry, bathymetry, salinity, temperature
-        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr.elements.size());
+        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr.elements.size() + mbr.bdryHexs.size());
 
         int i = 0;
         V centroid[3];
@@ -598,51 +611,75 @@ struct CBlock : public BlockBase<T>
             mpas_input->domain(i, 4) = temperature[i];            
         }
 
-        // TODO surface facets
-        mbr.mb
+        V faceTemp[1], faceSal[1];
+        vector<EntityHandle> parent;
+        int offset = mbr.elements.size();
+        for (int j = 0; j < mbr.bdryHexs.size(); j++)
+        {
+            mbr.mb->get_coords(&mbr.bdryHexs[j], 1, centroid);
+            mpas_input->domain(offset + j, 0) = centroid[0];
+            mpas_input->domain(offset + j, 1) = centroid[1];
+            mpas_input->domain(offset + j, 2) = centroid[2];
+
+            // Get tag data associated to parent cell
+            parent.clear();
+            mbr.mb->get_adjacencies(&mbr.bdryHexs[j], 1, 3, false, parent);
+            if (parent.size() != 1)
+            {
+                cerr << "ERROR: Expected a single parent element" << endl;
+                exit(1);
+            }
+            mbr.mb->tag_get_data(salinityTag, parent.data(), 1, faceSal);
+            mbr.mb->tag_get_data(temperatureTag, parent.data(), 1, faceTemp);
+
+            mpas_input->domain(offset + j, 3) = faceSal[0];
+            mpas_input->domain(offset + j, 4) = faceTemp[0];     
+        }
 
         mpas_input->set_domain_params();
 
-        // const int MAX_NODES_PER_ELEMENT = 20; // Overestimate of maximum number of corners to a cell
+        // Compute bounding box of MPAS vertices
+        VectorX<T> mins(3), maxs(3);
+        mins(0) = mbr.coords[0]; maxs(0) = mbr.coords[0];
+        mins(1) = mbr.coords[1]; maxs(1) = mbr.coords[1];
+        mins(2) = mbr.coords[2]; maxs(2) = mbr.coords[2];
+        for (int j = 0; j < mbr.coords.size(); j+=3)
+        {
+            if (mbr.coords[j] < mins(0)) mins(0) = mbr.coords[j];
+            if (mbr.coords[j] > maxs(0)) maxs(0) = mbr.coords[j];
+            if (mbr.coords[j+1] < mins(1)) mins(1) = mbr.coords[j+1];
+            if (mbr.coords[j+1] > maxs(1)) maxs(1) = mbr.coords[j+1];
+            if (mbr.coords[j+2] < mins(2)) mins(2) = mbr.coords[j+2];
+            if (mbr.coords[j+2] > maxs(2)) maxs(2) = mbr.coords[j+2];
+        }
 
-        // const EntityHandle* conn = nullptr;
-        // V centroid[3];
-        // V nodeCoords[MAX_NODES_PER_ELEMENT];
-        // int nnodes = 0;
-        // for (auto e : mbr.elements)
-        // {
-        //     // Get list of all vertices adjacent to e
-        //     mbr.mb->get_connectivity(e, conn, nnodes, true);
+        // Update bounding box if roms bounds were passed
+        if (roms_mins.size() == 3 && roms_maxs.size() == 3)
+        {
+            if (roms_mins(0) < mins(0)) mins(0) = roms_mins(0);
+            if (roms_maxs(0) > maxs(0)) maxs(0) = roms_maxs(0);
+            if (roms_mins(1) < mins(1)) mins(1) = roms_mins(1);
+            if (roms_maxs(1) > maxs(1)) maxs(1) = roms_maxs(1);
+            if (roms_mins(2) < mins(2)) mins(2) = roms_mins(2);
+            if (roms_maxs(2) > maxs(2)) maxs(2) = roms_maxs(2);
+        }
 
-        //     //debug
-        //     if (nnodes > MAX_NODES_PER_ELEMENT)
-        //     {
-        //         cerr << "Unexpected number of adjacent vertices: " << nnodes << endl;
-        //         exit(1);
-        //     }
+        // Set parametrization
+        mpas_input->set_domain_params(mins, maxs);
 
-        //     // Get all coords associated with adjacent vertices
-        //     // array size is nnodes*3
-        //     mbr.mb->get_coords(conn, nnodes, nodeCoords);
+        // Set up MFA from user-specified options
+        this->setup_MFA(cp, mfa_info);
 
-        //     // Compute centroid
-        //     centroid[0] = 0;
-        //     centroid[1] = 0;
-        //     centroid[2] = 0;
-        //     for (int i = 0; i < nnodes; i++)
-        //     {
-        //         centroid[0] += nodeCoords[i*3];
-        //         centroid[1] += nodeCoords[i*3 + 1];
-        //         centroid[2] += nodeCoords[i*3 + 2];
-        //     }
+        // Find block bounds for coordinates and values
+        bounds_mins = mpas_input->domain.colwise().minCoeff();
+        bounds_maxs = mpas_input->domain.colwise().maxCoeff();
+        core_mins   = bounds_mins.head(dom_dim);
+        core_maxs   = bounds_maxs.head(dom_dim);
 
-        //     // Add to PointSet with variable data
-        //     mpas_input->domain(i, 0) = centroid[0];
-        //     mpas_input->domain(i, 1) = centroid[1];
-        //     mpas_input->domain(i, 2) = centroid[2];
-        //     mpas_input->domain(i, 3) = salinity[vid];
-        //     mpas_input->domain(i, 4) = temperature[vid];
-        // }
+        // debug
+        mfa::print_bbox(mins, maxs, "MPAS Custom");
+        mfa::print_bbox(core_mins, core_maxs, "MPAS Core");
+        mfa::print_bbox(bounds_mins, bounds_maxs, "MPAS Bounds");
     }
 
     template <typename V>
