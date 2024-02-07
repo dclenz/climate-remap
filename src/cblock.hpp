@@ -33,6 +33,62 @@ using namespace std;
 using namespace moab;
 
 template <typename V>
+struct MBReader
+{
+    Interface* mb;
+    Range vertices;
+    Range elements;
+
+    string filename;
+    vector<V> coords;
+
+    ErrorCode rval;
+
+    MBReader()
+    {
+        mb = new Core;
+    }
+
+    ~MBReader()
+    {
+        delete mb;
+    }
+
+    void loadMesh(string filename_)
+    {
+        filename = filename_;
+        rval = mb->load_mesh(filename.c_str()); MB_CHK_ERR_RET(rval);
+
+        // Get vertices
+        rval = mb->get_entities_by_type(0, MBVERTEX, vertices); MB_CHK_ERR_RET(rval);
+
+        // Get vertex coordinates
+        coords.resize(vertices.size()*3);
+        rval = mb->get_coords(vertices, coords.data()); MB_CHK_ERR_RET(rval);
+
+        // Get mesh element rage
+        rval = mb->get_entities_by_dimension(0, 3, elements); MB_CHK_ERR_RET(rval);
+
+        // Get surface facets
+        rval = mb->get_entities_by_type(0, MBQUAD, quads); MB_CHK_ERR_RET(rval);
+        for (auto it = quads.begin(), end = quads.end(); it != end; ++it)
+        {
+            mb->get_adjacencies(  , 1, 3, false)
+        }
+    }
+
+    void test()
+    {
+        V centroid[3];
+        for (auto it = elements.begin(), end = elements.end(); it != end; ++it)
+        {
+            mb->get_coords(&(*it), 1, centroid);
+            // cerr << centroid[0] << " " << centroid[1] << " " << centroid[2] << endl;
+        }
+    }
+};
+
+template <typename V>
 struct MOABReader
 {
     int max_id;
@@ -62,7 +118,9 @@ struct MOABReader
         read_vertices();
 
         // Get MOAB instance
-        Interface* mb = new( std::nothrow ) Core;
+        MBReader<V> test;
+        test.loadMesh(filename_);
+        test.test();
     }
 
     template <typename DT>
@@ -502,6 +560,90 @@ struct CBlock : public BlockBase<T>
         void save(const void* b_, diy::BinaryBuffer& bb)    { mfa::save<CBlock, T>(b_, bb); }
     static
         void load(void* b_, diy::BinaryBuffer& bb)          { mfa::load<CBlock, T>(b_, bb); }
+
+    template <typename V>
+    void read_mpas_data_3d_mb(
+            const   diy::Master::ProxyWithLink& cp,
+                    string filename,
+                    MFAInfo& mfa_info,
+                    const VectorX<T>& roms_mins = VectorX<T>(),
+                    const VectorX<T>& roms_maxs = VectorX<T>())
+    {
+        MBReader<V> mbr;
+        mbr.loadMesh(filename);
+
+        Tag temperatureTag;
+        mbr.mb->tag_get_handle("Temperature3d", temperatureTag);
+        vector<T> temperature(mbr.elements.size());
+        mbr.mb->tag_get_data(temperatureTag, mbr.elements, temperature.data());
+
+        Tag salinityTag;
+        mbr.mb->tag_get_handle("Salinity3d", salinityTag);
+        vector<T> salinity(mbr.elements.size());
+        mbr.mb->tag_get_data(salinityTag, mbr.elements, salinity.data());
+
+        VectorXi model_dims(3);
+        model_dims << 3, 1, 1;          // geometry, bathymetry, salinity, temperature
+        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr.elements.size());
+
+        int i = 0;
+        V centroid[3];
+        for (auto it = mbr.elements.begin(), end = mbr.elements.end(); it != end; ++it, ++i)
+        {
+            mbr.mb->get_coords(&(*it), 1, centroid);
+            mpas_input->domain(i, 0) = centroid[0];
+            mpas_input->domain(i, 1) = centroid[1];
+            mpas_input->domain(i, 2) = centroid[2];
+            mpas_input->domain(i, 3) = salinity[i];
+            mpas_input->domain(i, 4) = temperature[i];            
+        }
+
+        // TODO surface facets
+        mbr.mb
+
+        mpas_input->set_domain_params();
+
+        // const int MAX_NODES_PER_ELEMENT = 20; // Overestimate of maximum number of corners to a cell
+
+        // const EntityHandle* conn = nullptr;
+        // V centroid[3];
+        // V nodeCoords[MAX_NODES_PER_ELEMENT];
+        // int nnodes = 0;
+        // for (auto e : mbr.elements)
+        // {
+        //     // Get list of all vertices adjacent to e
+        //     mbr.mb->get_connectivity(e, conn, nnodes, true);
+
+        //     //debug
+        //     if (nnodes > MAX_NODES_PER_ELEMENT)
+        //     {
+        //         cerr << "Unexpected number of adjacent vertices: " << nnodes << endl;
+        //         exit(1);
+        //     }
+
+        //     // Get all coords associated with adjacent vertices
+        //     // array size is nnodes*3
+        //     mbr.mb->get_coords(conn, nnodes, nodeCoords);
+
+        //     // Compute centroid
+        //     centroid[0] = 0;
+        //     centroid[1] = 0;
+        //     centroid[2] = 0;
+        //     for (int i = 0; i < nnodes; i++)
+        //     {
+        //         centroid[0] += nodeCoords[i*3];
+        //         centroid[1] += nodeCoords[i*3 + 1];
+        //         centroid[2] += nodeCoords[i*3 + 2];
+        //     }
+
+        //     // Add to PointSet with variable data
+        //     mpas_input->domain(i, 0) = centroid[0];
+        //     mpas_input->domain(i, 1) = centroid[1];
+        //     mpas_input->domain(i, 2) = centroid[2];
+        //     mpas_input->domain(i, 3) = salinity[vid];
+        //     mpas_input->domain(i, 4) = temperature[vid];
+        // }
+    }
 
     template <typename V>
     void read_mpas_data_3d(
