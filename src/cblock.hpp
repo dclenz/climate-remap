@@ -57,9 +57,11 @@ struct MBReader
 
     void loadMesh(string filename_)
     {
+        // Create two filesets for ROMS and MPAS
+
         cout << "MBReader: Reading file " << filename_ << endl;
         filename = filename_;
-        rval = mb->load_mesh(filename.c_str()); MB_CHK_ERR_RET(rval);
+        rval = mb->load_mesh(filename.c_str()); MB_CHK_ERR_RET(rval);  // extra args to load to a specific fileset, use load_file
 
         // Get vertices
         rval = mb->get_entities_by_type(0, MBVERTEX, vertices); MB_CHK_ERR_RET(rval);
@@ -596,6 +598,8 @@ struct CBlock : public BlockBase<T>
         vector<T> salinity(mbr.elements.size());
         mbr.mb->tag_get_data(salinityTag, mbr.elements, salinity.data());
 
+        // create map GLOBAL_ID --> rangeIDX
+
         VectorXi model_dims(3);
         model_dims << 3, 1, 1;          // geometry, bathymetry, salinity, temperature
         mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr.elements.size() + mbr.bdryHexs.size());
@@ -636,8 +640,6 @@ struct CBlock : public BlockBase<T>
             mpas_input->domain(offset + j, 3) = faceSal[0];
             mpas_input->domain(offset + j, 4) = faceTemp[0];     
         }
-
-        mpas_input->set_domain_params();
 
         // Compute bounding box of MPAS vertices
         VectorX<T> mins(3), maxs(3);
@@ -681,6 +683,117 @@ struct CBlock : public BlockBase<T>
         mfa::print_bbox(mins, maxs, "MPAS Custom");
         mfa::print_bbox(core_mins, core_maxs, "MPAS Core");
         mfa::print_bbox(bounds_mins, bounds_maxs, "MPAS Bounds");
+    }
+
+    template <typename V>
+    void read_roms_data_3d_mb(
+            const   diy::Master::ProxyWithLink& cp,
+                    string filename)
+    {
+        const bool decodeAtVertices = false;
+
+        VectorXi model_dims(1);
+        model_dims(0) = 3;      // geometric coordinates only
+
+        MBReader<V> mbr;
+        mbr.loadMesh(filename);
+
+        int npts = 0;
+        V coord[3];
+        int i = 0;
+        if (decodeAtVertices)
+        {
+            npts = mbr.vertices.size();
+            roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
+            for (auto it = mbr.vertices.begin(), end = mbr.vertices.end(); it != end; ++it, ++i)
+            {
+                mbr.mb->get_coords(&(*it), 1, coord);
+                roms_input->domain(i, 0) = coord[0];
+                roms_input->domain(i, 1) = coord[1];
+                roms_input->domain(i, 2) = coord[2];
+            }
+        }
+        else
+        {
+            npts = mbr.elements.size();
+            roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
+            for (auto it = mbr.elements.begin(), end = mbr.elements.end(); it != end; ++it, ++i)
+            {
+                mbr.mb->get_coords(&(*it), 1, coord);
+                roms_input->domain(i, 0) = coord[0];
+                roms_input->domain(i, 1) = coord[1];
+                roms_input->domain(i, 2) = coord[2];
+            }
+        }
+
+        // Compute input parametrization
+        roms_input->set_domain_params();
+
+        // Find block bounds for coordinates and values
+        bounds_mins = roms_input->domain.colwise().minCoeff();
+        bounds_maxs = roms_input->domain.colwise().maxCoeff();
+        core_mins   = bounds_mins.head(dom_dim);
+        core_maxs   = bounds_maxs.head(dom_dim);
+
+        // debug
+        mfa::print_bbox(core_mins, core_maxs, "ROMS Core");
+        mfa::print_bbox(bounds_mins, bounds_maxs, "ROMS Bounds");
+    }
+
+    void remap(
+        const diy::Master::ProxyWithLink&   cp,
+        MFAInfo&    info)
+    {
+        // All depth levels
+        vector<T> depth1 = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170.197, 180.761, 191.821, 203.499, 215.923, 229.233, 243.584, 259.156, 276.152, 294.815, 315.424, 338.312, 363.875, 392.58, 424.989, 461.767, 503.707, 551.749, 606.997, 670.729, 744.398, 829.607, 928.043, 1041.37, 1171.04, 1318.09, 1482.9, 1664.99, 1863.01, 2074.87, 2298.04, 2529.9, 2768.1, 3010.67, 3256.14};
+
+        // Removes some depth levels near ocean floor
+        vector<T> depth2 = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170.197, 180.761, 191.821, 203.499, 215.923, 229.233, 243.584, 259.156, 276.152, 294.815, 315.424, 338.312, 363.875, 392.58, 424.989, 461.767, 503.707, 551.749, 606.997, 670.729, 744.398, 829.607, 928.043, 1171.04, 1482.9, 1863.01, 2298.04, 2768.1, 3256.14};
+
+        vector<T> refBottomDepth = depth2;
+
+        auto dom_mins = mpas_input->mins();
+        auto dom_maxs = mpas_input->maxs();
+        vector<T> zknots(refBottomDepth.size());
+        for (int i = 0; i < refBottomDepth.size(); i++)
+        {
+            T zk = (-1*refBottomDepth[i] - dom_mins(2)) / (dom_maxs(2) - dom_mins(2));
+            zknots[refBottomDepth.size() - 1 - i] = zk;
+        }
+
+        vector<vector<T>> allknots(3);
+        allknots[0] = mfa->var(0).tmesh.all_knots[0];   // leave unchanged
+        allknots[1] = mfa->var(1).tmesh.all_knots[1];   // leave unchanged
+        allknots[2] = mfa->pinKnots(zknots, mfa->var(0).p(0));
+
+        mfa->setKnots(allknots);
+        mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted);
+
+        VectorX<T> roms_mins = roms_input->mins();
+        VectorX<T> roms_maxs = roms_input->maxs();
+        VectorX<T> mpas_mins = mpas_input->mins();
+        VectorX<T> mpas_maxs = mpas_input->maxs();
+        VectorX<T> mpas_diff = mpas_maxs - mpas_mins;
+
+        // Compute parametrization of ROMS points in terms of MPAS domain
+        shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
+        new_param->param_list.resize(roms_input->npts, dom_dim);
+        for (size_t k = 0; k < dom_dim; k++)
+        {
+            new_param->param_list.col(k) = (roms_input->domain.col(k).array() - mpas_mins(k)) * (1/mpas_diff(k));
+        }
+
+        // Set parametrization object for the PointSet we will decode into
+        mpas_approx = new mfa::PointSet<T>(new_param, mpas_input->model_dims());
+
+        // Evaluate MFA
+        mfa->Decode(*mpas_approx, false);
+
+        // Move pointers around for visualizing in Paraview
+        input = mpas_input;
+        mpas_input = nullptr;
+        approx = mpas_approx;
+        mpas_approx = nullptr;
     }
 
     template <typename V>
@@ -899,60 +1012,7 @@ struct CBlock : public BlockBase<T>
         mfa::print_bbox(bounds_mins, bounds_maxs, "MPAS Bounds");
     }
 
-    template <typename V>
-    void read_roms_data_3d_mb(
-            const   diy::Master::ProxyWithLink& cp,
-                    string filename)
-    {
-        const bool decodeAtVertices = false;
-
-        VectorXi model_dims(1);
-        model_dims(0) = 3;      // geometric coordinates only
-
-        MBReader<V> mbr;
-        mbr.loadMesh(filename);
-
-        int npts = 0;
-        V coord[3];
-        int i = 0;
-        if (decodeAtVertices)
-        {
-            npts = mbr.vertices.size();
-            roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
-            for (auto it = mbr.vertices.begin(), end = mbr.vertices.end(); it != end; ++it, ++i)
-            {
-                mbr.mb->get_coords(&(*it), 1, coord);
-                roms_input->domain(i, 0) = coord[0];
-                roms_input->domain(i, 1) = coord[1];
-                roms_input->domain(i, 2) = coord[2];
-            }
-        }
-        else
-        {
-            npts = mbr.elements.size();
-            roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
-            for (auto it = mbr.elements.begin(), end = mbr.elements.end(); it != end; ++it, ++i)
-            {
-                mbr.mb->get_coords(&(*it), 1, coord);
-                roms_input->domain(i, 0) = coord[0];
-                roms_input->domain(i, 1) = coord[1];
-                roms_input->domain(i, 2) = coord[2];
-            }
-        }
-
-        // Compute input parametrization
-        roms_input->set_domain_params();
-
-        // Find block bounds for coordinates and values
-        bounds_mins = roms_input->domain.colwise().minCoeff();
-        bounds_maxs = roms_input->domain.colwise().maxCoeff();
-        core_mins   = bounds_mins.head(dom_dim);
-        core_maxs   = bounds_maxs.head(dom_dim);
-
-        // debug
-        mfa::print_bbox(core_mins, core_maxs, "ROMS Core");
-        mfa::print_bbox(bounds_mins, bounds_maxs, "ROMS Bounds");
-    }
+    
 
     template <typename V>
     void read_roms_data_3d(
@@ -1134,61 +1194,7 @@ struct CBlock : public BlockBase<T>
         mfa::print_bbox(bounds_mins, bounds_maxs, "Bounds");
     }
 
-    void remap(
-        const diy::Master::ProxyWithLink&   cp,
-        MFAInfo&    info)
-    {
-        // All depth levels
-        vector<T> depth1 = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170.197, 180.761, 191.821, 203.499, 215.923, 229.233, 243.584, 259.156, 276.152, 294.815, 315.424, 338.312, 363.875, 392.58, 424.989, 461.767, 503.707, 551.749, 606.997, 670.729, 744.398, 829.607, 928.043, 1041.37, 1171.04, 1318.09, 1482.9, 1664.99, 1863.01, 2074.87, 2298.04, 2529.9, 2768.1, 3010.67, 3256.14};
 
-        // Removes some depth levels near ocean floor
-        vector<T> depth2 = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170.197, 180.761, 191.821, 203.499, 215.923, 229.233, 243.584, 259.156, 276.152, 294.815, 315.424, 338.312, 363.875, 392.58, 424.989, 461.767, 503.707, 551.749, 606.997, 670.729, 744.398, 829.607, 928.043, 1171.04, 1482.9, 1863.01, 2298.04, 2768.1, 3256.14};
-
-        vector<T> refBottomDepth = depth2;
-
-        auto dom_mins = mpas_input->mins();
-        auto dom_maxs = mpas_input->maxs();
-        vector<T> zknots(refBottomDepth.size());
-        for (int i = 0; i < refBottomDepth.size(); i++)
-        {
-            T zk = (-1*refBottomDepth[i] - dom_mins(2)) / (dom_maxs(2) - dom_mins(2));
-            zknots[refBottomDepth.size() - 1 - i] = zk;
-        }
-
-        vector<vector<T>> allknots(3);
-        allknots[0] = mfa->var(0).tmesh.all_knots[0];   // leave unchanged
-        allknots[1] = mfa->var(1).tmesh.all_knots[1];   // leave unchanged
-        allknots[2] = mfa->pinKnots(zknots, mfa->var(0).p(0));
-
-        mfa->setKnots(allknots);
-        mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted);
-
-        VectorX<T> roms_mins = roms_input->mins();
-        VectorX<T> roms_maxs = roms_input->maxs();
-        VectorX<T> mpas_mins = mpas_input->mins();
-        VectorX<T> mpas_maxs = mpas_input->maxs();
-        VectorX<T> mpas_diff = mpas_maxs - mpas_mins;
-
-        // Compute parametrization of ROMS points in terms of MPAS domain
-        shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
-        new_param->param_list.resize(roms_input->npts, dom_dim);
-        for (size_t k = 0; k < dom_dim; k++)
-        {
-            new_param->param_list.col(k) = (roms_input->domain.col(k).array() - mpas_mins(k)) * (1/mpas_diff(k));
-        }
-
-        // Set parametrization object for the PointSet we will decode into
-        mpas_approx = new mfa::PointSet<T>(new_param, mpas_input->model_dims());
-
-        // Evaluate MFA
-        mfa->Decode(*mpas_approx, false);
-
-        // Move pointers around for visualizing in Paraview
-        input = mpas_input;
-        mpas_input = nullptr;
-        approx = mpas_approx;
-        mpas_approx = nullptr;
-    }
 
 
     void print_knots_ctrl(const mfa::MFA_Data<T>& model) const
