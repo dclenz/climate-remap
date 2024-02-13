@@ -36,12 +36,23 @@ template <typename V>
 struct MBReader
 {
     Interface* mb;
-    Range vertices;
-    Range elements;
-    vector<EntityHandle> bdryHexs;   // hexagonal faces on the domain boundary
+    EntityHandle sourceFileSet{0};
+    EntityHandle targetFileSet{0};
 
-    string filename;
-    vector<V> coords;
+    // Source data
+    string sourceFilename;
+    Range sourceVertices;
+    Range sourceElements;
+    map<EntityHandle, int> sourceEltIdxMap;
+    vector<EntityHandle> sourceBdryHexs;   // hexagonal faces on the domain boundary
+    vector<V> sourceCoords;
+
+    // Target data
+    string targetFilename;
+    Range  targetVertices;
+    Range  targetElements;
+    map<EntityHandle, int> targetEltIdxMap;
+    vector<V> targetCoords;
 
     ErrorCode rval;
 
@@ -55,35 +66,80 @@ struct MBReader
         delete mb;
     }
 
-    void loadMesh(string filename_)
+    void loadSourceMesh(string filename_)
     {
-        // Create two filesets for ROMS and MPAS
+        cout << "MBReader: Reading remap source file " << filename_ << endl;
+        sourceFilename = filename_;
 
-        cout << "MBReader: Reading file " << filename_ << endl;
-        filename = filename_;
-        rval = mb->load_mesh(filename.c_str()); MB_CHK_ERR_RET(rval);  // extra args to load to a specific fileset, use load_file
+        mb->create_meshset(MESHSET_SET, sourceFileSet);
+        rval = mb->load_file(sourceFilename.c_str(), &sourceFileSet); MB_CHK_ERR_RET(rval);
 
         // Get vertices
-        rval = mb->get_entities_by_type(0, MBVERTEX, vertices); MB_CHK_ERR_RET(rval);
+        rval = mb->get_entities_by_type(sourceFileSet, MBVERTEX, sourceVertices); MB_CHK_ERR_RET(rval);
 
         // Get vertex coordinates
-        coords.resize(vertices.size()*3);
-        rval = mb->get_coords(vertices, coords.data()); MB_CHK_ERR_RET(rval);
+        sourceCoords.resize(sourceVertices.size()*3);
+        rval = mb->get_coords(sourceVertices, sourceCoords.data()); MB_CHK_ERR_RET(rval);
 
         // Get mesh element rage
-        rval = mb->get_entities_by_dimension(0, 3, elements); MB_CHK_ERR_RET(rval);
+        rval = mb->get_entities_by_dimension(sourceFileSet, 3, sourceElements); MB_CHK_ERR_RET(rval);
 
+        // Create map of element handles to range indices
+        int idx = 0;
+        for (auto eIt = sourceElements.begin(), end = sourceElements.end(); eIt != end; ++eIt)
+        {
+            sourceEltIdxMap[*eIt] = idx;
+            idx++;
+        }
+    }
+
+    void loadTargetMesh(string filename_)
+    {
+        cout << "MBReader: Reading remap target file " << filename_ << endl;
+        targetFilename = filename_;
+
+        //
+        mb->create_meshset(MESHSET_SET, targetFileSet);
+        rval = mb->load_file(targetFilename.c_str(), &targetFileSet); MB_CHK_ERR_RET(rval);
+
+        // Get vertices
+        rval = mb->get_entities_by_type(targetFileSet, MBVERTEX, targetVertices); MB_CHK_ERR_RET(rval);
+
+        // Get vertex coordinates
+        targetCoords.resize(targetVertices.size()*3);
+        rval = mb->get_coords(targetVertices, targetCoords.data()); MB_CHK_ERR_RET(rval);
+
+        // Get mesh element rage
+        rval = mb->get_entities_by_dimension(targetFileSet, 3, targetElements); MB_CHK_ERR_RET(rval);
+
+        // Create map of element handles to range indices
+        int idx = 0;
+        for (auto eIt = targetElements.begin(), end = targetElements.end(); eIt != end; ++eIt)
+        {
+            targetEltIdxMap[*eIt] = idx;
+            idx++;
+        }
+    }
+
+    void loadSourceBdry()
+    {
+        if (!sourceFileSet)
+        {
+            cerr << "MBReader Error: Cannot load source boundary, source file has not been read.\nExiting." << endl;
+            exit(1);
+        }
+        
         // Get surface facets
         Range hexs;
         vector<EntityHandle> neighbors;
-        rval = mb->get_entities_by_type(0, MBPOLYGON, hexs); MB_CHK_ERR_RET(rval);
+        rval = mb->get_entities_by_type(sourceFileSet, MBPOLYGON, hexs); MB_CHK_ERR_RET(rval);
         for (auto it = hexs.begin(), end = hexs.end(); it != end; ++it)
         {
             neighbors.clear();
             mb->get_adjacencies( &(*it) , 1, 3, false, neighbors);
             if (neighbors.size() == 1)
             {
-                bdryHexs.push_back(*it);
+                sourceBdryHexs.push_back(*it);
             }
             else if (neighbors.size() == 0)
             {
@@ -93,425 +149,10 @@ struct MBReader
         }
     }
 
-    void test()
-    {
-        V centroid[3];
-        for (auto it = elements.begin(), end = elements.end(); it != end; ++it)
-        {
-            mb->get_coords(&(*it), 1, centroid);
-            // cerr << centroid[0] << " " << centroid[1] << " " << centroid[2] << endl;
-        }
-    }
+
 };
 
-template <typename V>
-struct MOABReader
-{
-    int max_id;
-    string filename;
-    vector<vector<V>> coords;
-    vector<vector<int>> elements;
-    map<string, int> start_ids;
-    map<string, int> end_ids; // last id of an element type (inclusive)
-    map<string, int> cell_counts;
-    map<string, int> faces_per_cell_;
 
-    // face_cell_map[CellType][i] is a vector containing all cells of type CellType that contain face i
-    // all indices are global
-    map<string, map<int, vector<int>>> face_cell_map; 
-
-    // Each string key is a cell type name (or "node")
-    // Each value is vector of datasets, so 
-    // data["Quad4"]["Salinity"] would be the vector storing the Salinity data read from file
-    map<string, map<string, vector<V>>> data;
-
-    MOABReader(string filename_) :
-        filename(filename_)
-    {
-        max_id = get_max_id(filename);
-        elements.resize(max_id);
-
-        read_vertices();
-
-        // Get MOAB instance
-        MBReader<V> test;
-        test.loadMesh(filename_);
-        test.test();
-    }
-
-    template <typename DT>
-    static DT read_hdf5_group_attr(   string filename,
-                        string group_name,
-                        string attrname,
-                        bool verbose = false)
-    {
-        using namespace HighFive;
-
-        DT attr_value[1];
-        try
-        {
-            File datafile(filename.c_str(), File::ReadWrite);
-            Group group = datafile.getGroup(group_name.c_str());
-            Attribute attr = group.getAttribute(attrname.c_str());
-            attr.read<DT>(attr_value);
-        }
-        catch (Exception& err)
-        {
-            // catch and print any HDF5 error
-            fmt::print("{}\n", err.what());
-        }
-
-        fmt::print("Debug attribute {} is {}\n", attrname, attr_value[0]);
-
-        return attr_value[0];
-    }
-
-    template <typename DT>
-    static DT read_hdf5_dataset_attr(   string filename,
-                        string dataset_name,
-                        string attrname,
-                        bool verbose = false)
-    {
-        using namespace HighFive;
-
-        DT attr_value[1];
-        try
-        {
-            File datafile(filename.c_str(), File::ReadWrite);
-            DataSet dset = datafile.getDataSet(dataset_name.c_str());
-            Attribute attr = dset.getAttribute(attrname.c_str());
-            attr.read<DT>(attr_value);
-        }
-        catch (Exception& err)
-        {
-            // catch and print any HDF5 error
-            fmt::print("{}\n", err.what());
-        }
-
-        fmt::print("Debug attribute {} is {}\n", attrname, attr_value[0]);
-
-        return attr_value[0];
-    }
-
-    template <typename DT>
-    static void read_hdf5_dataset_1d(  string filename,
-                                string dsetname,
-                                vector<DT>& buffer,
-                                bool verbose = false)
-    {
-        using namespace HighFive;
-        try
-        {
-            File datafile(filename.c_str(), File::ReadWrite);
-            DataSet dataset = datafile.getDataSet(dsetname.c_str());
-
-            vector<size_t> dims = dataset.getDimensions();
-            if (dims.size() != 1)
-            {
-                fmt::print("ERROR: Dimension mismatch in read_hdf5_dataset_1d. Got: {}. Expected: {}.\n", dims.size(), 1);
-                fmt::print("       filename: {}\n", filename);
-                fmt::print("       dataset:  {}\n", dsetname);
-                fmt::print("Exiting.\n");
-                exit(1);
-            }
-            dataset.read(buffer);
-
-            if (verbose)
-            {
-                fmt::print("Read dataset {} from file {}\n", dsetname, filename);
-                fmt::print("  Data size: {}\n", dims[0]);
-            }
-        }
-        catch (Exception& err)
-        {
-            // catch and print any HDF5 error
-            fmt::print("{}\n", err.what());
-        }
-
-        return;
-    }
-
-    template <typename DT>
-    static void read_hdf5_dataset_2d(  string filename,
-                                string dsetname,
-                                vector<vector<DT>>& buffer,
-                                bool verbose = false)
-    {
-        using namespace HighFive;
-        try
-        {
-            File datafile(filename.c_str(), File::ReadWrite);
-            DataSet dataset = datafile.getDataSet(dsetname.c_str());
-
-            vector<size_t> dims = dataset.getDimensions();
-            if (dims.size() != 2)
-            {
-                fmt::print("ERROR: Dimension mismatch in read_hdf5_dataset_2d. Got: {}. Expected: {}.\n", dims.size(), 2);
-                fmt::print("       filename: {}\n", filename);
-                fmt::print("       dataset:  {}\n", dsetname);
-                fmt::print("Exiting.\n");
-                exit(1);
-            }
-            dataset.read(buffer);
-
-            if (verbose)
-            {
-                fmt::print("Read dataset {} from file {}\n", dsetname, filename);
-                fmt::print("  Data size: {} x {}\n", dims[0], dims[1]);
-            }
-        }
-        catch (Exception& err)
-        {
-            // catch and print any HDF5 error
-            fmt::print("{}\n", err.what());
-        }
-
-        return;
-    }
-
-    vector<string> get_element_names()
-    {
-        vector<string> names;
-
-        for (const auto& it : start_ids)
-        {
-            names.push_back(it.first);
-        }
-
-        return names;
-    }
-
-    string get_cell_type(int i)
-    {
-        for (auto name : get_element_names())
-        {
-            if (i >= start_ids[name] && i <= end_ids[name])
-            {
-                return name;
-            }
-        }
-
-        cerr << "ERROR: Could not find element type for index " << i << endl;
-        exit(1);
-
-        return "";
-    }
-
-    int get_max_id(string filename)
-    {
-        string max_id_attr_name = "max_id";
-        int id = read_hdf5_group_attr<int>(filename, "tstt", max_id_attr_name, true);
-
-        return id;
-    }
-
-    void read_vertices()
-    {
-        string coords_name = "tstt/nodes/coordinates";
-        read_hdf5_dataset_2d<V>(filename, coords_name, coords, true);
-
-        int start_id = read_hdf5_dataset_attr<int>(filename, coords_name, "start_id", true);
-        start_ids["nodes"] = start_id;
-        end_ids["nodes"] = start_id + coords.size() - 1;
-        cell_counts["nodes"] = coords.size();
-        faces_per_cell_["nodes"] = 0;
-        data["nodes"] = map<string, vector<V>>();
-    }
-
-    void read_cells(string cell_name)
-    {
-        vector<vector<int>> cell_conn;
-        string cell_conn_name = "tstt/elements/" + cell_name + "/connectivity";
-
-        int start_id = read_cell_attr<int>(cell_name, "start_id");
-        read_hdf5_dataset_2d<int>(filename, cell_conn_name, cell_conn, true);
-
-        // Copy data into global elements vector
-        for (int i = 0; i < cell_conn.size(); i++)
-        {
-            int cell_id = i+start_id;
-            elements[cell_id] = cell_conn[i];
-        }
-
-        start_ids[cell_name] = start_id;
-        end_ids[cell_name] = start_id + cell_conn.size() - 1;
-        cell_counts[cell_name] = cell_conn.size();
-        faces_per_cell_[cell_name] = cell_conn[0].size();
-        data[cell_name] = map<string, vector<V>>();
-    }
-
-    void build_face_cell_map()
-    {
-        vector<string> enames = get_element_names();
-        for (auto face_name : enames)
-        {
-            face_cell_map[face_name] = map<int, vector<int>>();
-        }
-
-        // For each cell type
-        for (auto cell_name : enames)
-        {
-            // For each cell of this type
-            for (int i = 0; i < num_cells(cell_name); i++)
-            {
-                int start_id = start_ids[cell_name];
-                int cell_id = start_id + i;
-
-                // For each face of this cell
-                for (auto face_id : elements[cell_id])
-                {
-                    // Get name of face type
-                    string face_name = get_cell_type(face_id);
-
-                    // Check if any cells have been added to the list for this face
-                    if (face_cell_map[face_name].count(face_id) == 0)
-                    {
-                        face_cell_map[face_name][face_id] = vector<int>();
-                    }
-
-                    // Add cell to list
-                    face_cell_map[face_name][face_id].push_back(cell_id);
-                }
-            }
-        }
-
-
-        //  Don't think this sanity check makes sense as written 
-        //
-        // // Sanity check
-        // set<string> no_parents; // list of cell types with no parent cells
-        // for (auto face_name : enames)
-        // {
-        //     for (int i = 0; i < num_cells(face_name); i++)
-        //     {
-        //         // Check if there are any parents for this face
-        //         if (face_cell_map[face_name].count(i) == 0)
-        //         {
-        //             // If this is the first cell, mark the cell type as having no parents
-        //             // This will hapen for full-dimensional cells
-        //             if (i == 0)
-        //             {
-        //                 no_parents.insert(face_name);
-        //             } 
-        //             else
-        //             {
-        //                 // if this is not the first cell, but this face type has not previously
-        //                 // been marked as having no parents, then something is wrong.
-        //                 // This means there are some faces with parents (namely, the first), and 
-        //                 // some without. This should not happen.
-        //                 if (no_parents.count(face_name) == 0)
-        //                 {
-        //                     cerr << face_name << " " << i << " does not have parent cells, but other cells of this type do" << endl;
-        //                     cerr << "This should not happen. Exiting" << endl;
-        //                     exit(1);
-        //                 }
-        //             }
-
-        //             continue; // skip to next face_id
-        //         }
-        //     }
-        // }
-
-        // cout << "Cell types with no parent cells are: ";
-        // for (auto name : no_parents)
-        // {
-        //     cout << name << " ";
-        // }
-        // cout << endl;
-    }
-
-    template<typename AT>
-    AT read_cell_attr(string cell_name, string attr_name)
-    {
-        // string full_attr_name = "/tstt/elements/" + cell_name + "/connectivity/" + attr_name;
-        return read_hdf5_dataset_attr<AT>(filename, "/tstt/elements/" + cell_name + "/connectivity/", attr_name);
-    }
-
-    void read_cell_data(string cell_name, string data_name)
-    {
-        // read cell data into buffer
-        vector<V> data_vec;
-        string tag_name = "tstt/elements/" + cell_name + "/tags/" + data_name;
-        read_hdf5_dataset_1d<V>(filename, tag_name, data_vec, true);
-
-        // If 'data' does not have a map for given cell_name yet, default construct one
-        if (data.count(cell_name) == 0)
-        {
-            data[cell_name] = map<string, vector<V>>();
-        }
-
-        // Inefficient deep copy
-        data[cell_name][data_name] = data_vec;
-    }
-
-    int num_verts()
-    {
-        return coords.size();
-    }
-
-    int num_cells(string cell_name)
-    {
-        if (cell_counts.count(cell_name) == 0)
-        {
-            cerr << "ERROR: Lookup error for key \'" << cell_name << "\' in MOABConnectivity::num_cells()" << endl;
-            exit(1);
-        }
-        return cell_counts[cell_name];
-    }
-
-    int faces_per_cell(string cell_name)
-    {
-        if (faces_per_cell_.count(cell_name) == 0)
-        {
-            cerr << "ERROR: Lookup error for key \'" << cell_name << "\' in MOABConnectivity::faces_per_cell()" << endl;
-            exit(1);
-        }
-        return faces_per_cell_[cell_name];
-    }
-
-    // Return the element ids for the parent cells containing face i
-    // Return the global index of the parent cells
-    // input i is the local index of the faces. So i is in [0, num_faces]
-    const vector<int>& get_parent_cells(string face_name, int i)
-    {
-        int start_id = start_ids[face_name];
-        return face_cell_map[face_name][start_id + i];
-    }
-
-    // Look up faces associated with the ith cell of type 'cell_name'
-    const vector<int>& get_faces(string cell_name, int i)
-    {
-        int start_id = start_ids[cell_name];
-        return elements[start_id + i];
-    }
-
-    // Look up faces associated with the ith overall cell (global indexing)
-    const vector<int>& get_faces(int i)
-    {
-        return elements[i];
-    }
-
-    // Look up vector of coordinates for the ith node
-    const vector<V>& get_coords(int i)
-    {
-        int start_id = start_ids["nodes"];  // this is usually == 1
-        return coords[i-start_id];
-    }
-
-    const vector<V>& get_data(string cell_name, string data_name)
-    {
-        // int data_id = dataset_ids[data_name];
-        return data[cell_name][data_name];
-    }
-
-    // return data value for data_name, using the global element index i
-    V get_element_data(int i, string data_name)
-    {
-        string cell_name = get_cell_type(i);
-        int cell_id = i - start_ids[cell_name];
-        return data[cell_name][data_name][cell_id];
-    }
-};
 
 // Climate-block
 template <typename T>
@@ -535,13 +176,18 @@ struct CBlock : public BlockBase<T>
     mfa::PointSet<T>*   mpas_error;
     mfa::PointSet<T>*   roms_input;
 
+    MBReader<T>* mbr;
+
     // zero-initialize pointers during default construction
     CBlock() : 
         Base(),
         mpas_input(nullptr),
         mpas_approx(nullptr),
         mpas_error(nullptr),
-        roms_input(nullptr) { }
+        roms_input(nullptr)
+    { 
+        mbr = new MBReader<T>();
+    }
 
     virtual ~CBlock()
     {
@@ -549,6 +195,7 @@ struct CBlock : public BlockBase<T>
         delete mpas_approx;
         delete mpas_error;
         delete roms_input;
+        delete mbr;
     }
 
     static
@@ -585,30 +232,29 @@ struct CBlock : public BlockBase<T>
                     const VectorX<T>& roms_mins = VectorX<T>(),
                     const VectorX<T>& roms_maxs = VectorX<T>())
     {
-        MBReader<V> mbr;
-        mbr.loadMesh(filename);
+        mbr->loadSourceMesh(filename);
+        mbr->loadSourceBdry();
 
         Tag temperatureTag;
-        mbr.mb->tag_get_handle("Temperature3d", temperatureTag);
-        vector<T> temperature(mbr.elements.size());
-        mbr.mb->tag_get_data(temperatureTag, mbr.elements, temperature.data());
+        mbr->mb->tag_get_handle("Temperature3d", temperatureTag);
+        vector<T> temperature(mbr->sourceElements.size());
+        mbr->mb->tag_get_data(temperatureTag, mbr->sourceElements, temperature.data());
 
         Tag salinityTag;
-        mbr.mb->tag_get_handle("Salinity3d", salinityTag);
-        vector<T> salinity(mbr.elements.size());
-        mbr.mb->tag_get_data(salinityTag, mbr.elements, salinity.data());
+        mbr->mb->tag_get_handle("Salinity3d", salinityTag);
+        vector<T> salinity(mbr->sourceElements.size());
+        mbr->mb->tag_get_data(salinityTag, mbr->sourceElements, salinity.data());
 
-        // create map GLOBAL_ID --> rangeIDX
-
+        // Set up MFA PointSet
         VectorXi model_dims(3);
         model_dims << 3, 1, 1;          // geometry, bathymetry, salinity, temperature
-        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr.elements.size() + mbr.bdryHexs.size());
+        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr->sourceElements.size() + mbr->sourceBdryHexs.size());
 
         int i = 0;
         V centroid[3];
-        for (auto it = mbr.elements.begin(), end = mbr.elements.end(); it != end; ++it, ++i)
+        for (auto it = mbr->sourceElements.begin(), end = mbr->sourceElements.end(); it != end; ++it, ++i)
         {
-            mbr.mb->get_coords(&(*it), 1, centroid);
+            mbr->mb->get_coords(&(*it), 1, centroid);
             mpas_input->domain(i, 0) = centroid[0];
             mpas_input->domain(i, 1) = centroid[1];
             mpas_input->domain(i, 2) = centroid[2];
@@ -616,47 +262,47 @@ struct CBlock : public BlockBase<T>
             mpas_input->domain(i, 4) = temperature[i];            
         }
 
+        // Add boundary data
         V faceTemp[1], faceSal[1];
         vector<EntityHandle> parent;
-        int offset = mbr.elements.size();
-        for (int j = 0; j < mbr.bdryHexs.size(); j++)
+        int offset = mbr->sourceElements.size();
+        for (int j = 0; j < mbr->sourceBdryHexs.size(); j++)
         {
-            mbr.mb->get_coords(&mbr.bdryHexs[j], 1, centroid);
+            mbr->mb->get_coords(&mbr->sourceBdryHexs[j], 1, centroid);
             mpas_input->domain(offset + j, 0) = centroid[0];
             mpas_input->domain(offset + j, 1) = centroid[1];
             mpas_input->domain(offset + j, 2) = centroid[2];
 
             // Get tag data associated to parent cell
             parent.clear();
-            mbr.mb->get_adjacencies(&mbr.bdryHexs[j], 1, 3, false, parent);
+            mbr->mb->get_adjacencies(&mbr->sourceBdryHexs[j], 1, 3, false, parent);
             if (parent.size() != 1)
             {
                 cerr << "ERROR: Expected a single parent element" << endl;
                 exit(1);
             }
-            mbr.mb->tag_get_data(salinityTag, parent.data(), 1, faceSal);
-            mbr.mb->tag_get_data(temperatureTag, parent.data(), 1, faceTemp);
 
-            mpas_input->domain(offset + j, 3) = faceSal[0];
-            mpas_input->domain(offset + j, 4) = faceTemp[0];     
+            int parentIdx = mbr->sourceEltIdxMap[parent[0]];
+            mpas_input->domain(offset + j, 3) = salinity[parentIdx];
+            mpas_input->domain(offset + j, 4) = temperature[parentIdx]; 
         }
 
         // Compute bounding box of MPAS vertices
         VectorX<T> mins(3), maxs(3);
-        mins(0) = mbr.coords[0]; maxs(0) = mbr.coords[0];
-        mins(1) = mbr.coords[1]; maxs(1) = mbr.coords[1];
-        mins(2) = mbr.coords[2]; maxs(2) = mbr.coords[2];
-        for (int j = 0; j < mbr.coords.size(); j+=3)
+        mins(0) = mbr->sourceCoords[0]; maxs(0) = mbr->sourceCoords[0];
+        mins(1) = mbr->sourceCoords[1]; maxs(1) = mbr->sourceCoords[1];
+        mins(2) = mbr->sourceCoords[2]; maxs(2) = mbr->sourceCoords[2];
+        for (int j = 0; j < mbr->sourceCoords.size(); j+=3)
         {
-            if (mbr.coords[j] < mins(0)) mins(0) = mbr.coords[j];
-            if (mbr.coords[j] > maxs(0)) maxs(0) = mbr.coords[j];
-            if (mbr.coords[j+1] < mins(1)) mins(1) = mbr.coords[j+1];
-            if (mbr.coords[j+1] > maxs(1)) maxs(1) = mbr.coords[j+1];
-            if (mbr.coords[j+2] < mins(2)) mins(2) = mbr.coords[j+2];
-            if (mbr.coords[j+2] > maxs(2)) maxs(2) = mbr.coords[j+2];
+            if (mbr->sourceCoords[j] < mins(0)) mins(0) = mbr->sourceCoords[j];
+            if (mbr->sourceCoords[j] > maxs(0)) maxs(0) = mbr->sourceCoords[j];
+            if (mbr->sourceCoords[j+1] < mins(1)) mins(1) = mbr->sourceCoords[j+1];
+            if (mbr->sourceCoords[j+1] > maxs(1)) maxs(1) = mbr->sourceCoords[j+1];
+            if (mbr->sourceCoords[j+2] < mins(2)) mins(2) = mbr->sourceCoords[j+2];
+            if (mbr->sourceCoords[j+2] > maxs(2)) maxs(2) = mbr->sourceCoords[j+2];
         }
 
-        // Update bounding box if roms bounds were passed
+        // Update bounding box to enclose ROMS bbox
         if (roms_mins.size() == 3 && roms_maxs.size() == 3)
         {
             if (roms_mins(0) < mins(0)) mins(0) = roms_mins(0);
@@ -695,19 +341,18 @@ struct CBlock : public BlockBase<T>
         VectorXi model_dims(1);
         model_dims(0) = 3;      // geometric coordinates only
 
-        MBReader<V> mbr;
-        mbr.loadMesh(filename);
+        mbr->loadTargetMesh(filename);
 
         int npts = 0;
         V coord[3];
         int i = 0;
         if (decodeAtVertices)
         {
-            npts = mbr.vertices.size();
+            npts = mbr->targetVertices.size();
             roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
-            for (auto it = mbr.vertices.begin(), end = mbr.vertices.end(); it != end; ++it, ++i)
+            for (auto it = mbr->targetVertices.begin(), end = mbr->targetVertices.end(); it != end; ++it, ++i)
             {
-                mbr.mb->get_coords(&(*it), 1, coord);
+                mbr->mb->get_coords(&(*it), 1, coord);
                 roms_input->domain(i, 0) = coord[0];
                 roms_input->domain(i, 1) = coord[1];
                 roms_input->domain(i, 2) = coord[2];
@@ -715,11 +360,11 @@ struct CBlock : public BlockBase<T>
         }
         else
         {
-            npts = mbr.elements.size();
+            npts = mbr->targetElements.size();
             roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
-            for (auto it = mbr.elements.begin(), end = mbr.elements.end(); it != end; ++it, ++i)
+            for (auto it = mbr->targetElements.begin(), end = mbr->targetElements.end(); it != end; ++it, ++i)
             {
-                mbr.mb->get_coords(&(*it), 1, coord);
+                mbr->mb->get_coords(&(*it), 1, coord);
                 roms_input->domain(i, 0) = coord[0];
                 roms_input->domain(i, 1) = coord[1];
                 roms_input->domain(i, 2) = coord[2];

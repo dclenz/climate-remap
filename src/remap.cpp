@@ -134,9 +134,7 @@ int main(int argc, char** argv)
     {
         master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
         {
-            if (dom_dim == 2) b->read_roms_data<real_t>(cp, romsfile);
-            else if (dom_dim == 3) b->read_roms_data_3d_mb<real_t>(cp, romsfile);
-            // b->read_roms_data_3d<double>(cp, romsfile);
+            b->read_roms_data_3d_mb<real_t>(cp, romsfile);
             b->input = b->roms_input;
             b->roms_input = nullptr;
         });
@@ -149,20 +147,6 @@ int main(int argc, char** argv)
             b->input = b->mpas_input;
             b->mpas_input = nullptr;
         });
-        // master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
-        // {
-        //     if (dom_dim == 2) b->read_mpas_data<real_t>(cp, mpasfile, mfa_info);
-        //     else if (dom_dim == 3) b->read_mpas_data_3d<real_t>(cp, mpasfile, mfa_info);
-        //     b->input = b->mpas_input;
-        //     b->mpas_input = nullptr;
-
-        //     b->mfa->FixedEncode(*b->input, mfa_info.regularization, mfa_info.reg1and2, mfa_info.weighted);
-            
-        //     vector<int> grid_size = {50, 50, 100};
-        //     // b->decode_block_grid(cp, grid_size);
-        //     b->decode_block(cp, false);
-        //     // b->range_error(cp, true, false);
-        // });
     }
     else if (input=="remap")
     {
