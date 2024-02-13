@@ -149,7 +149,55 @@ struct MBReader
         }
     }
 
+    void sourceVertexBounds(VectorX<V>& mins, VectorX<V>& maxs)
+    {
+        if (sourceVertices.size() == 0)
+        {
+            cerr << "Warning: Attempted to compute sourceVertexBounds but no vertices found." << endl;
+        }
 
+        const int dim = 3;
+        mins = VectorX<V>::Zero(dim);
+        maxs = VectorX<V>::Zero(dim);
+        for (int j = 0; j < dim; j++)
+        {
+            mins(j) = sourceCoords[j];
+            maxs(j) = sourceCoords[j];
+        }
+        for (int i = 0; i < sourceVertices.size(); i++)
+        {
+            for (int j = 0; j < dim; j++)
+            {
+                if (sourceCoords[dim*i+j] < mins(j)) mins(j) = sourceCoords[dim*i+j];
+                if (sourceCoords[dim*i+j] > maxs(j)) maxs(j) = sourceCoords[dim*i+j];
+            }
+        }
+    }
+
+    void targetVertexBounds(VectorX<V>& mins, VectorX<V>& maxs)
+    {
+        if (targetVertices.size() == 0)
+        {
+            cerr << "Warning: Attempted to compute targetVertexBounds but no vertices found." << endl;
+        }
+
+        const int dim = 3;
+        mins = VectorX<V>::Zero(dim);
+        maxs = VectorX<V>::Zero(dim);
+        for (int j = 0; j < dim; j++)
+        {
+            mins(j) = targetCoords[j];
+            maxs(j) = targetCoords[j];
+        }
+        for (int i = 0; i < targetVertices.size(); i++)
+        {
+            for (int j = 0; j < dim; j++)
+            {
+                if (targetCoords[dim*i+j] < mins(j)) mins(j) = targetCoords[dim*i+j];
+                if (targetCoords[dim*i+j] > maxs(j)) maxs(j) = targetCoords[dim*i+j];
+            }
+        }
+    }
 };
 
 
@@ -178,6 +226,13 @@ struct CBlock : public BlockBase<T>
 
     MBReader<T>* mbr;
 
+    VectorX<T> sourceMins;
+    VectorX<T> sourceMaxs;
+    VectorX<T> targetMins;
+    VectorX<T> targetMaxs;
+    VectorX<T> bboxMins;
+    VectorX<T> bboxMaxs;
+
     // zero-initialize pointers during default construction
     CBlock() : 
         Base(),
@@ -187,6 +242,13 @@ struct CBlock : public BlockBase<T>
         roms_input(nullptr)
     { 
         mbr = new MBReader<T>();
+
+        sourceMins = VectorX<T>::Zero(dom_dim);
+        sourceMaxs = VectorX<T>::Zero(dom_dim);
+        targetMins = VectorX<T>::Zero(dom_dim);
+        targetMaxs = VectorX<T>::Zero(dom_dim);
+        bboxMins = VectorX<T>::Zero(dom_dim);
+        bboxMaxs = VectorX<T>::Zero(dom_dim);
     }
 
     virtual ~CBlock()
@@ -224,6 +286,17 @@ struct CBlock : public BlockBase<T>
     static
         void load(void* b_, diy::BinaryBuffer& bb)          { mfa::load<CBlock, T>(b_, bb); }
 
+    void computeBbox()
+    {
+        for (int i = 0; i < dom_dim; i++)
+        {
+            bboxMins(i) = std::min(sourceMins(i), targetMins(i));
+            bboxMaxs(i) = std::max(sourceMaxs(i), targetMaxs(i));
+        }
+
+        mfa::print_bbox(bboxMins, bboxMaxs, "Full Bounding Box");
+    }
+
     template <typename V>
     void read_mpas_data_3d_mb(
             const   diy::Master::ProxyWithLink& cp,
@@ -234,6 +307,7 @@ struct CBlock : public BlockBase<T>
     {
         mbr->loadSourceMesh(filename);
         mbr->loadSourceBdry();
+        mbr->sourceVertexBounds(sourceMins, sourceMaxs);
 
         Tag temperatureTag;
         mbr->mb->tag_get_handle("Temperature3d", temperatureTag);
@@ -263,7 +337,6 @@ struct CBlock : public BlockBase<T>
         }
 
         // Add boundary data
-        V faceTemp[1], faceSal[1];
         vector<EntityHandle> parent;
         int offset = mbr->sourceElements.size();
         for (int j = 0; j < mbr->sourceBdryHexs.size(); j++)
@@ -287,34 +360,11 @@ struct CBlock : public BlockBase<T>
             mpas_input->domain(offset + j, 4) = temperature[parentIdx]; 
         }
 
-        // Compute bounding box of MPAS vertices
-        VectorX<T> mins(3), maxs(3);
-        mins(0) = mbr->sourceCoords[0]; maxs(0) = mbr->sourceCoords[0];
-        mins(1) = mbr->sourceCoords[1]; maxs(1) = mbr->sourceCoords[1];
-        mins(2) = mbr->sourceCoords[2]; maxs(2) = mbr->sourceCoords[2];
-        for (int j = 0; j < mbr->sourceCoords.size(); j+=3)
-        {
-            if (mbr->sourceCoords[j] < mins(0)) mins(0) = mbr->sourceCoords[j];
-            if (mbr->sourceCoords[j] > maxs(0)) maxs(0) = mbr->sourceCoords[j];
-            if (mbr->sourceCoords[j+1] < mins(1)) mins(1) = mbr->sourceCoords[j+1];
-            if (mbr->sourceCoords[j+1] > maxs(1)) maxs(1) = mbr->sourceCoords[j+1];
-            if (mbr->sourceCoords[j+2] < mins(2)) mins(2) = mbr->sourceCoords[j+2];
-            if (mbr->sourceCoords[j+2] > maxs(2)) maxs(2) = mbr->sourceCoords[j+2];
-        }
-
-        // Update bounding box to enclose ROMS bbox
-        if (roms_mins.size() == 3 && roms_maxs.size() == 3)
-        {
-            if (roms_mins(0) < mins(0)) mins(0) = roms_mins(0);
-            if (roms_maxs(0) > maxs(0)) maxs(0) = roms_maxs(0);
-            if (roms_mins(1) < mins(1)) mins(1) = roms_mins(1);
-            if (roms_maxs(1) > maxs(1)) maxs(1) = roms_maxs(1);
-            if (roms_mins(2) < mins(2)) mins(2) = roms_mins(2);
-            if (roms_maxs(2) > maxs(2)) maxs(2) = roms_maxs(2);
-        }
+        // Compute total bounding box around mpas and roms
+        computeBbox();
 
         // Set parametrization
-        mpas_input->set_domain_params(mins, maxs);
+        mpas_input->set_domain_params(bboxMins, bboxMaxs);
 
         // Set up MFA from user-specified options
         this->setup_MFA(cp, mfa_info);
@@ -326,7 +376,7 @@ struct CBlock : public BlockBase<T>
         core_maxs   = bounds_maxs.head(dom_dim);
 
         // debug
-        mfa::print_bbox(mins, maxs, "MPAS Custom");
+        mfa::print_bbox(bboxMins, bboxMaxs, "MPAS Custom");
         mfa::print_bbox(core_mins, core_maxs, "MPAS Core");
         mfa::print_bbox(bounds_mins, bounds_maxs, "MPAS Bounds");
     }
@@ -342,6 +392,7 @@ struct CBlock : public BlockBase<T>
         model_dims(0) = 3;      // geometric coordinates only
 
         mbr->loadTargetMesh(filename);
+        mbr->targetVertexBounds(targetMins, targetMaxs);
 
         int npts = 0;
         V coord[3];
@@ -372,7 +423,7 @@ struct CBlock : public BlockBase<T>
         }
 
         // Compute input parametrization
-        roms_input->set_domain_params();
+        roms_input->set_domain_params(targetMins, targetMaxs);
 
         // Find block bounds for coordinates and values
         bounds_mins = roms_input->domain.colwise().minCoeff();
@@ -383,6 +434,34 @@ struct CBlock : public BlockBase<T>
         // debug
         mfa::print_bbox(core_mins, core_maxs, "ROMS Core");
         mfa::print_bbox(bounds_mins, bounds_maxs, "ROMS Bounds");
+    }
+
+    void convertParams( const mfa::PointSet<T>* source,
+                        const mfa::PointSet<T>* target,
+                              mfa::PointSet<T>* convert)
+    {
+        VectorX<T> tMins = target->mins();
+        VectorX<T> tMaxs = target->maxs();
+        VectorX<T> sMins = source->mins();
+        VectorX<T> sMaxs = source->maxs();
+        VectorX<T> sDiff = sMaxs - sMins;
+
+        // Compute parametrization of target points w.r.t. source domain
+        shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
+        new_param->param_list.resize(target->npts, dom_dim);
+        for (size_t k = 0; k < dom_dim; k++)
+        {
+            new_param->param_list.col(k) = (target->domain.col(k).array() - sMins(k)) * (1/sDiff(k));
+        }
+
+        // Set parametrization object for the PointSet we will decode into
+        if (convert)
+        {
+            cerr << "Overwriting existing pointset in convertParams()" << endl;
+            delete convert;
+            convert = nullptr;
+        }
+        convert = new mfa::PointSet<T>(new_param, source->model_dims());
     }
 
     void remap(
@@ -414,22 +493,24 @@ struct CBlock : public BlockBase<T>
         mfa->setKnots(allknots);
         mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted);
 
-        VectorX<T> roms_mins = roms_input->mins();
-        VectorX<T> roms_maxs = roms_input->maxs();
-        VectorX<T> mpas_mins = mpas_input->mins();
-        VectorX<T> mpas_maxs = mpas_input->maxs();
-        VectorX<T> mpas_diff = mpas_maxs - mpas_mins;
+        // Compute parametrization of roms points w.r.t mpas domain
+        convertParams(mpas_input, roms_input, mpas_approx);
+        // VectorX<T> roms_mins = roms_input->mins();
+        // VectorX<T> roms_maxs = roms_input->maxs();
+        // VectorX<T> mpas_mins = mpas_input->mins();
+        // VectorX<T> mpas_maxs = mpas_input->maxs();
+        // VectorX<T> mpas_diff = mpas_maxs - mpas_mins;
 
-        // Compute parametrization of ROMS points in terms of MPAS domain
-        shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
-        new_param->param_list.resize(roms_input->npts, dom_dim);
-        for (size_t k = 0; k < dom_dim; k++)
-        {
-            new_param->param_list.col(k) = (roms_input->domain.col(k).array() - mpas_mins(k)) * (1/mpas_diff(k));
-        }
+        // // Compute parametrization of ROMS points in terms of MPAS domain
+        // shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
+        // new_param->param_list.resize(roms_input->npts, dom_dim);
+        // for (size_t k = 0; k < dom_dim; k++)
+        // {
+        //     new_param->param_list.col(k) = (roms_input->domain.col(k).array() - mpas_mins(k)) * (1/mpas_diff(k));
+        // }
 
-        // Set parametrization object for the PointSet we will decode into
-        mpas_approx = new mfa::PointSet<T>(new_param, mpas_input->model_dims());
+        // // Set parametrization object for the PointSet we will decode into
+        // mpas_approx = new mfa::PointSet<T>(new_param, mpas_input->model_dims());
 
         // Evaluate MFA
         mfa->Decode(*mpas_approx, false);
