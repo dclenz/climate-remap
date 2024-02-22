@@ -33,411 +33,174 @@ using namespace std;
 using namespace moab;
 
 template <typename V>
-struct MOABReader
+struct MBReader
 {
-    int max_id;
-    string filename;
-    vector<vector<V>> coords;
-    vector<vector<int>> elements;
-    map<string, int> start_ids;
-    map<string, int> end_ids; // last id of an element type (inclusive)
-    map<string, int> cell_counts;
-    map<string, int> faces_per_cell_;
+    Interface* mb;
+    EntityHandle sourceFileSet{0};
+    EntityHandle targetFileSet{0};
 
-    // face_cell_map[CellType][i] is a vector containing all cells of type CellType that contain face i
-    // all indices are global
-    map<string, map<int, vector<int>>> face_cell_map; 
+    // Source data
+    string sourceFilename;
+    Range sourceVertices;
+    Range sourceElements;
+    map<EntityHandle, int> sourceEltIdxMap;
+    vector<EntityHandle> sourceBdryHexs;   // hexagonal faces on the domain boundary
+    vector<V> sourceCoords;
 
-    // Each string key is a cell type name (or "node")
-    // Each value is vector of datasets, so 
-    // data["Quad4"]["Salinity"] would be the vector storing the Salinity data read from file
-    map<string, map<string, vector<V>>> data;
+    // Target data
+    string targetFilename;
+    Range  targetVertices;
+    Range  targetElements;
+    map<EntityHandle, int> targetEltIdxMap;
+    vector<V> targetCoords;
 
-    MOABReader(string filename_) :
-        filename(filename_)
+    ErrorCode rval;
+
+    MBReader()
     {
-        max_id = get_max_id(filename);
-        elements.resize(max_id);
-
-        read_vertices();
-
-        // Get MOAB instance
-        Interface* mb = new( std::nothrow ) Core;
+        mb = new Core;
     }
 
-    template <typename DT>
-    static DT read_hdf5_group_attr(   string filename,
-                        string group_name,
-                        string attrname,
-                        bool verbose = false)
+    ~MBReader()
     {
-        using namespace HighFive;
-
-        DT attr_value[1];
-        try
-        {
-            File datafile(filename.c_str(), File::ReadWrite);
-            Group group = datafile.getGroup(group_name.c_str());
-            Attribute attr = group.getAttribute(attrname.c_str());
-            attr.read<DT>(attr_value);
-        }
-        catch (Exception& err)
-        {
-            // catch and print any HDF5 error
-            fmt::print("{}\n", err.what());
-        }
-
-        fmt::print("Debug attribute {} is {}\n", attrname, attr_value[0]);
-
-        return attr_value[0];
+        delete mb;
     }
 
-    template <typename DT>
-    static DT read_hdf5_dataset_attr(   string filename,
-                        string dataset_name,
-                        string attrname,
-                        bool verbose = false)
+    void loadSourceMesh(string filename_)
     {
-        using namespace HighFive;
+        cout << "MBReader: Reading remap source file " << filename_ << endl;
+        sourceFilename = filename_;
 
-        DT attr_value[1];
-        try
+        mb->create_meshset(MESHSET_SET, sourceFileSet);
+        rval = mb->load_file(sourceFilename.c_str(), &sourceFileSet); MB_CHK_ERR_RET(rval);
+
+        // Get vertices
+        rval = mb->get_entities_by_type(sourceFileSet, MBVERTEX, sourceVertices); MB_CHK_ERR_RET(rval);
+
+        // Get vertex coordinates
+        sourceCoords.resize(sourceVertices.size()*3);
+        rval = mb->get_coords(sourceVertices, sourceCoords.data()); MB_CHK_ERR_RET(rval);
+
+        // Get mesh element rage
+        rval = mb->get_entities_by_dimension(sourceFileSet, 3, sourceElements); MB_CHK_ERR_RET(rval);
+
+        // Create map of element handles to range indices
+        int idx = 0;
+        for (auto eIt = sourceElements.begin(), end = sourceElements.end(); eIt != end; ++eIt)
         {
-            File datafile(filename.c_str(), File::ReadWrite);
-            DataSet dset = datafile.getDataSet(dataset_name.c_str());
-            Attribute attr = dset.getAttribute(attrname.c_str());
-            attr.read<DT>(attr_value);
+            sourceEltIdxMap[*eIt] = idx;
+            idx++;
         }
-        catch (Exception& err)
-        {
-            // catch and print any HDF5 error
-            fmt::print("{}\n", err.what());
-        }
-
-        fmt::print("Debug attribute {} is {}\n", attrname, attr_value[0]);
-
-        return attr_value[0];
     }
 
-    template <typename DT>
-    static void read_hdf5_dataset_1d(  string filename,
-                                string dsetname,
-                                vector<DT>& buffer,
-                                bool verbose = false)
+    void loadTargetMesh(string filename_)
     {
-        using namespace HighFive;
-        try
-        {
-            File datafile(filename.c_str(), File::ReadWrite);
-            DataSet dataset = datafile.getDataSet(dsetname.c_str());
+        cout << "MBReader: Reading remap target file " << filename_ << endl;
+        targetFilename = filename_;
 
-            vector<size_t> dims = dataset.getDimensions();
-            if (dims.size() != 1)
-            {
-                fmt::print("ERROR: Dimension mismatch in read_hdf5_dataset_1d. Got: {}. Expected: {}.\n", dims.size(), 1);
-                fmt::print("       filename: {}\n", filename);
-                fmt::print("       dataset:  {}\n", dsetname);
-                fmt::print("Exiting.\n");
-                exit(1);
-            }
-            dataset.read(buffer);
-
-            if (verbose)
-            {
-                fmt::print("Read dataset {} from file {}\n", dsetname, filename);
-                fmt::print("  Data size: {}\n", dims[0]);
-            }
-        }
-        catch (Exception& err)
-        {
-            // catch and print any HDF5 error
-            fmt::print("{}\n", err.what());
-        }
-
-        return;
-    }
-
-    template <typename DT>
-    static void read_hdf5_dataset_2d(  string filename,
-                                string dsetname,
-                                vector<vector<DT>>& buffer,
-                                bool verbose = false)
-    {
-        using namespace HighFive;
-        try
-        {
-            File datafile(filename.c_str(), File::ReadWrite);
-            DataSet dataset = datafile.getDataSet(dsetname.c_str());
-
-            vector<size_t> dims = dataset.getDimensions();
-            if (dims.size() != 2)
-            {
-                fmt::print("ERROR: Dimension mismatch in read_hdf5_dataset_2d. Got: {}. Expected: {}.\n", dims.size(), 2);
-                fmt::print("       filename: {}\n", filename);
-                fmt::print("       dataset:  {}\n", dsetname);
-                fmt::print("Exiting.\n");
-                exit(1);
-            }
-            dataset.read(buffer);
-
-            if (verbose)
-            {
-                fmt::print("Read dataset {} from file {}\n", dsetname, filename);
-                fmt::print("  Data size: {} x {}\n", dims[0], dims[1]);
-            }
-        }
-        catch (Exception& err)
-        {
-            // catch and print any HDF5 error
-            fmt::print("{}\n", err.what());
-        }
-
-        return;
-    }
-
-    vector<string> get_element_names()
-    {
-        vector<string> names;
-
-        for (const auto& it : start_ids)
-        {
-            names.push_back(it.first);
-        }
-
-        return names;
-    }
-
-    string get_cell_type(int i)
-    {
-        for (auto name : get_element_names())
-        {
-            if (i >= start_ids[name] && i <= end_ids[name])
-            {
-                return name;
-            }
-        }
-
-        cerr << "ERROR: Could not find element type for index " << i << endl;
-        exit(1);
-
-        return "";
-    }
-
-    int get_max_id(string filename)
-    {
-        string max_id_attr_name = "max_id";
-        int id = read_hdf5_group_attr<int>(filename, "tstt", max_id_attr_name, true);
-
-        return id;
-    }
-
-    void read_vertices()
-    {
-        string coords_name = "tstt/nodes/coordinates";
-        read_hdf5_dataset_2d<V>(filename, coords_name, coords, true);
-
-        int start_id = read_hdf5_dataset_attr<int>(filename, coords_name, "start_id", true);
-        start_ids["nodes"] = start_id;
-        end_ids["nodes"] = start_id + coords.size() - 1;
-        cell_counts["nodes"] = coords.size();
-        faces_per_cell_["nodes"] = 0;
-        data["nodes"] = map<string, vector<V>>();
-    }
-
-    void read_cells(string cell_name)
-    {
-        vector<vector<int>> cell_conn;
-        string cell_conn_name = "tstt/elements/" + cell_name + "/connectivity";
-
-        int start_id = read_cell_attr<int>(cell_name, "start_id");
-        read_hdf5_dataset_2d<int>(filename, cell_conn_name, cell_conn, true);
-
-        // Copy data into global elements vector
-        for (int i = 0; i < cell_conn.size(); i++)
-        {
-            int cell_id = i+start_id;
-            elements[cell_id] = cell_conn[i];
-        }
-
-        start_ids[cell_name] = start_id;
-        end_ids[cell_name] = start_id + cell_conn.size() - 1;
-        cell_counts[cell_name] = cell_conn.size();
-        faces_per_cell_[cell_name] = cell_conn[0].size();
-        data[cell_name] = map<string, vector<V>>();
-    }
-
-    void build_face_cell_map()
-    {
-        vector<string> enames = get_element_names();
-        for (auto face_name : enames)
-        {
-            face_cell_map[face_name] = map<int, vector<int>>();
-        }
-
-        // For each cell type
-        for (auto cell_name : enames)
-        {
-            // For each cell of this type
-            for (int i = 0; i < num_cells(cell_name); i++)
-            {
-                int start_id = start_ids[cell_name];
-                int cell_id = start_id + i;
-
-                // For each face of this cell
-                for (auto face_id : elements[cell_id])
-                {
-                    // Get name of face type
-                    string face_name = get_cell_type(face_id);
-
-                    // Check if any cells have been added to the list for this face
-                    if (face_cell_map[face_name].count(face_id) == 0)
-                    {
-                        face_cell_map[face_name][face_id] = vector<int>();
-                    }
-
-                    // Add cell to list
-                    face_cell_map[face_name][face_id].push_back(cell_id);
-                }
-            }
-        }
-
-
-        //  Don't think this sanity check makes sense as written 
         //
-        // // Sanity check
-        // set<string> no_parents; // list of cell types with no parent cells
-        // for (auto face_name : enames)
-        // {
-        //     for (int i = 0; i < num_cells(face_name); i++)
-        //     {
-        //         // Check if there are any parents for this face
-        //         if (face_cell_map[face_name].count(i) == 0)
-        //         {
-        //             // If this is the first cell, mark the cell type as having no parents
-        //             // This will hapen for full-dimensional cells
-        //             if (i == 0)
-        //             {
-        //                 no_parents.insert(face_name);
-        //             } 
-        //             else
-        //             {
-        //                 // if this is not the first cell, but this face type has not previously
-        //                 // been marked as having no parents, then something is wrong.
-        //                 // This means there are some faces with parents (namely, the first), and 
-        //                 // some without. This should not happen.
-        //                 if (no_parents.count(face_name) == 0)
-        //                 {
-        //                     cerr << face_name << " " << i << " does not have parent cells, but other cells of this type do" << endl;
-        //                     cerr << "This should not happen. Exiting" << endl;
-        //                     exit(1);
-        //                 }
-        //             }
+        mb->create_meshset(MESHSET_SET, targetFileSet);
+        rval = mb->load_file(targetFilename.c_str(), &targetFileSet); MB_CHK_ERR_RET(rval);
 
-        //             continue; // skip to next face_id
-        //         }
-        //     }
-        // }
+        // Get vertices
+        rval = mb->get_entities_by_type(targetFileSet, MBVERTEX, targetVertices); MB_CHK_ERR_RET(rval);
 
-        // cout << "Cell types with no parent cells are: ";
-        // for (auto name : no_parents)
-        // {
-        //     cout << name << " ";
-        // }
-        // cout << endl;
-    }
+        // Get vertex coordinates
+        targetCoords.resize(targetVertices.size()*3);
+        rval = mb->get_coords(targetVertices, targetCoords.data()); MB_CHK_ERR_RET(rval);
 
-    template<typename AT>
-    AT read_cell_attr(string cell_name, string attr_name)
-    {
-        // string full_attr_name = "/tstt/elements/" + cell_name + "/connectivity/" + attr_name;
-        return read_hdf5_dataset_attr<AT>(filename, "/tstt/elements/" + cell_name + "/connectivity/", attr_name);
-    }
+        // Get mesh element rage
+        rval = mb->get_entities_by_dimension(targetFileSet, 3, targetElements); MB_CHK_ERR_RET(rval);
 
-    void read_cell_data(string cell_name, string data_name)
-    {
-        // read cell data into buffer
-        vector<V> data_vec;
-        string tag_name = "tstt/elements/" + cell_name + "/tags/" + data_name;
-        read_hdf5_dataset_1d<V>(filename, tag_name, data_vec, true);
-
-        // If 'data' does not have a map for given cell_name yet, default construct one
-        if (data.count(cell_name) == 0)
+        // Create map of element handles to range indices
+        int idx = 0;
+        for (auto eIt = targetElements.begin(), end = targetElements.end(); eIt != end; ++eIt)
         {
-            data[cell_name] = map<string, vector<V>>();
+            targetEltIdxMap[*eIt] = idx;
+            idx++;
         }
-
-        // Inefficient deep copy
-        data[cell_name][data_name] = data_vec;
     }
 
-    int num_verts()
+    void loadSourceBdry()
     {
-        return coords.size();
-    }
-
-    int num_cells(string cell_name)
-    {
-        if (cell_counts.count(cell_name) == 0)
+        if (!sourceFileSet)
         {
-            cerr << "ERROR: Lookup error for key \'" << cell_name << "\' in MOABConnectivity::num_cells()" << endl;
+            cerr << "MBReader Error: Cannot load source boundary, source file has not been read.\nExiting." << endl;
             exit(1);
         }
-        return cell_counts[cell_name];
-    }
-
-    int faces_per_cell(string cell_name)
-    {
-        if (faces_per_cell_.count(cell_name) == 0)
+        
+        // Get surface facets
+        Range hexs;
+        vector<EntityHandle> neighbors;
+        rval = mb->get_entities_by_type(sourceFileSet, MBPOLYGON, hexs); MB_CHK_ERR_RET(rval);
+        for (auto it = hexs.begin(), end = hexs.end(); it != end; ++it)
         {
-            cerr << "ERROR: Lookup error for key \'" << cell_name << "\' in MOABConnectivity::faces_per_cell()" << endl;
-            exit(1);
+            neighbors.clear();
+            mb->get_adjacencies( &(*it) , 1, 3, false, neighbors);
+            if (neighbors.size() == 1)
+            {
+                sourceBdryHexs.push_back(*it);
+            }
+            else if (neighbors.size() == 0)
+            {
+                cerr << "ERROR: Found hex face with no parent cells" << endl;
+                exit(1);
+            }
         }
-        return faces_per_cell_[cell_name];
     }
 
-    // Return the element ids for the parent cells containing face i
-    // Return the global index of the parent cells
-    // input i is the local index of the faces. So i is in [0, num_faces]
-    const vector<int>& get_parent_cells(string face_name, int i)
+    void sourceVertexBounds(VectorX<V>& mins, VectorX<V>& maxs)
     {
-        int start_id = start_ids[face_name];
-        return face_cell_map[face_name][start_id + i];
+        if (sourceVertices.size() == 0)
+        {
+            cerr << "Warning: Attempted to compute sourceVertexBounds but no vertices found." << endl;
+        }
+
+        const int dim = 3;
+        mins = VectorX<V>::Zero(dim);
+        maxs = VectorX<V>::Zero(dim);
+        for (int j = 0; j < dim; j++)
+        {
+            mins(j) = sourceCoords[j];
+            maxs(j) = sourceCoords[j];
+        }
+        for (int i = 0; i < sourceVertices.size(); i++)
+        {
+            for (int j = 0; j < dim; j++)
+            {
+                if (sourceCoords[dim*i+j] < mins(j)) mins(j) = sourceCoords[dim*i+j];
+                if (sourceCoords[dim*i+j] > maxs(j)) maxs(j) = sourceCoords[dim*i+j];
+            }
+        }
     }
 
-    // Look up faces associated with the ith cell of type 'cell_name'
-    const vector<int>& get_faces(string cell_name, int i)
+    void targetVertexBounds(VectorX<V>& mins, VectorX<V>& maxs)
     {
-        int start_id = start_ids[cell_name];
-        return elements[start_id + i];
-    }
+        if (targetVertices.size() == 0)
+        {
+            cerr << "Warning: Attempted to compute targetVertexBounds but no vertices found." << endl;
+        }
 
-    // Look up faces associated with the ith overall cell (global indexing)
-    const vector<int>& get_faces(int i)
-    {
-        return elements[i];
-    }
-
-    // Look up vector of coordinates for the ith node
-    const vector<V>& get_coords(int i)
-    {
-        int start_id = start_ids["nodes"];  // this is usually == 1
-        return coords[i-start_id];
-    }
-
-    const vector<V>& get_data(string cell_name, string data_name)
-    {
-        // int data_id = dataset_ids[data_name];
-        return data[cell_name][data_name];
-    }
-
-    // return data value for data_name, using the global element index i
-    V get_element_data(int i, string data_name)
-    {
-        string cell_name = get_cell_type(i);
-        int cell_id = i - start_ids[cell_name];
-        return data[cell_name][data_name][cell_id];
+        const int dim = 3;
+        mins = VectorX<V>::Zero(dim);
+        maxs = VectorX<V>::Zero(dim);
+        for (int j = 0; j < dim; j++)
+        {
+            mins(j) = targetCoords[j];
+            maxs(j) = targetCoords[j];
+        }
+        for (int i = 0; i < targetVertices.size(); i++)
+        {
+            for (int j = 0; j < dim; j++)
+            {
+                if (targetCoords[dim*i+j] < mins(j)) mins(j) = targetCoords[dim*i+j];
+                if (targetCoords[dim*i+j] > maxs(j)) maxs(j) = targetCoords[dim*i+j];
+            }
+        }
     }
 };
+
+
 
 // Climate-block
 template <typename T>
@@ -461,13 +224,32 @@ struct CBlock : public BlockBase<T>
     mfa::PointSet<T>*   mpas_error;
     mfa::PointSet<T>*   roms_input;
 
+    MBReader<T>* mbr;
+
+    VectorX<T> sourceMins;
+    VectorX<T> sourceMaxs;
+    VectorX<T> targetMins;
+    VectorX<T> targetMaxs;
+    VectorX<T> bboxMins;
+    VectorX<T> bboxMaxs;
+
     // zero-initialize pointers during default construction
     CBlock() : 
         Base(),
         mpas_input(nullptr),
         mpas_approx(nullptr),
         mpas_error(nullptr),
-        roms_input(nullptr) { }
+        roms_input(nullptr)
+    { 
+        mbr = new MBReader<T>();
+
+        sourceMins = VectorX<T>::Zero(dom_dim);
+        sourceMaxs = VectorX<T>::Zero(dom_dim);
+        targetMins = VectorX<T>::Zero(dom_dim);
+        targetMaxs = VectorX<T>::Zero(dom_dim);
+        bboxMins = VectorX<T>::Zero(dom_dim);
+        bboxMaxs = VectorX<T>::Zero(dom_dim);
+    }
 
     virtual ~CBlock()
     {
@@ -475,6 +257,7 @@ struct CBlock : public BlockBase<T>
         delete mpas_approx;
         delete mpas_error;
         delete roms_input;
+        delete mbr;
     }
 
     static
@@ -503,206 +286,85 @@ struct CBlock : public BlockBase<T>
     static
         void load(void* b_, diy::BinaryBuffer& bb)          { mfa::load<CBlock, T>(b_, bb); }
 
+    void computeBbox()
+    {
+        for (int i = 0; i < dom_dim; i++)
+        {
+            bboxMins(i) = std::min(sourceMins(i), targetMins(i));
+            bboxMaxs(i) = std::max(sourceMaxs(i), targetMaxs(i));
+        }
+
+        mfa::print_bbox(bboxMins, bboxMaxs, "Full Bounding Box");
+    }
+
     template <typename V>
-    void read_mpas_data_3d(
+    void read_mpas_data_3d_mb(
             const   diy::Master::ProxyWithLink& cp,
                     string filename,
                     MFAInfo& mfa_info,
                     const VectorX<T>& roms_mins = VectorX<T>(),
                     const VectorX<T>& roms_maxs = VectorX<T>())
     {
+        mbr->loadSourceMesh(filename);
+        mbr->loadSourceBdry();
+        mbr->sourceVertexBounds(sourceMins, sourceMaxs);
+
+        Tag temperatureTag;
+        mbr->mb->tag_get_handle("Temperature3d", temperatureTag);
+        vector<T> temperature(mbr->sourceElements.size());
+        mbr->mb->tag_get_data(temperatureTag, mbr->sourceElements, temperature.data());
+
+        Tag salinityTag;
+        mbr->mb->tag_get_handle("Salinity3d", salinityTag);
+        vector<T> salinity(mbr->sourceElements.size());
+        mbr->mb->tag_get_data(salinityTag, mbr->sourceElements, salinity.data());
+
+        // Set up MFA PointSet
         VectorXi model_dims(3);
         model_dims << 3, 1, 1;          // geometry, bathymetry, salinity, temperature
+        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr->sourceElements.size() + mbr->sourceBdryHexs.size());
 
-        VectorX<T> mins = VectorX<T>::Constant(3, 100000000000000);
-        VectorX<T> maxs = VectorX<T>::Constant(3, -100000000000000);
-
-        MOABReader<V> mr(filename);
-        mr.read_cells("Quad4");
-        mr.read_cells("Polygon6");
-        mr.read_cells("Polyhedron8");
-        mr.read_cell_data("Polyhedron8", "Salinity3d");
-        mr.read_cell_data("Polyhedron8", "Temperature3d");
-        mr.build_face_cell_map();
-
-        // Create lists of surface faces and the 3D cells that contain them
-        int p6_start = mr.start_ids["Polygon6"];
-        vector<int> surface_face_ids;
-        vector<int> surface_parent_ids;
-        for (int i = 0; i < mr.num_cells("Polygon6"); i++)
+        int i = 0;
+        V centroid[3];
+        for (auto it = mbr->sourceElements.begin(), end = mbr->sourceElements.end(); it != end; ++it, ++i)
         {
-            vector<int> parents = mr.get_parent_cells("Polygon6", i);
-            int nparents = parents.size();
-            if (nparents == 1)
-            {
-                // Add global id of polygon cell
-                surface_face_ids.push_back(i + p6_start);
-
-                // Add global id of parent cell
-                surface_parent_ids.push_back(parents[0]);
-            }
-            else if (nparents = 0)
-            {
-                cerr << "surface " << i << " has no parents" << endl;
-            }
-            else if (nparents > 2)
-            {
-                cerr << "surface " << i << " has " << nparents << " parents" << endl;
-            }
-        }
-
-        // Create MFA PointSet to hold all data
-        int num_surface_faces = surface_face_ids.size();
-        int num_polyhedra = mr.num_cells("Polyhedron8");
-        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, num_surface_faces + num_polyhedra);
-
-        // Data structures for reading cell data
-        vector<T> centroid(3, 0);
-        vector<T> vertex_coords;
-        vector<int> faces;
-        vector<int> verts;
-        set<int> cell_vertices;
-
-        // Add the surface facets to the PointSet
-        for (int i = 0; i < num_surface_faces; i++)
-        {
-            centroid.clear();
-            centroid.assign(3, 0);
-            cell_vertices.clear();
-
-            // Get vertices of face
-            int face_id = surface_face_ids[i];
-            verts = mr.get_faces(face_id);
-            for (auto v : verts)
-            {
-                cell_vertices.insert(v);
-            }
-
-            // Compute face centroid
-            int num_vertices = cell_vertices.size();
-            if (num_vertices != 6) {cerr << "BAD VERTICES" << endl; exit(1);}   // we expect the faces to be hexagonal
-            for (auto v : cell_vertices)
-            {
-                vertex_coords = mr.get_coords(v);
-                
-                // Compute bounding box to cover all MPAS vertices, not just their centroids
-                // The depth levels that define the knot distribution are taken from the MPAS
-                // data file, so we need to make sure that each of these depth levels is inside
-                // our bounding box. If the bounding box was set from centroids only, then the
-                // lowest or highest depths might lie outside the box.
-                if (vertex_coords[0] < mins[0]) mins[0] = vertex_coords[0];
-                if (vertex_coords[0] > maxs[0]) maxs[0] = vertex_coords[0];
-                if (vertex_coords[1] < mins[1]) mins[1] = vertex_coords[1];
-                if (vertex_coords[1] > maxs[1]) maxs[1] = vertex_coords[1];
-                if (vertex_coords[2] < mins[2]) mins[2] = vertex_coords[2];
-                if (vertex_coords[2] > maxs[2]) maxs[2] = vertex_coords[2];
-
-                // Compute centroid
-                centroid[0] += vertex_coords[0] / num_vertices;
-                centroid[1] += vertex_coords[1] / num_vertices;
-                centroid[2] += vertex_coords[2] / num_vertices;
-            }
-
-            // Add to PointSet with variable data
+            mbr->mb->get_coords(&(*it), 1, centroid);
             mpas_input->domain(i, 0) = centroid[0];
             mpas_input->domain(i, 1) = centroid[1];
             mpas_input->domain(i, 2) = centroid[2];
-            mpas_input->domain(i, 3) = mr.get_element_data(surface_parent_ids[i], "Salinity3d");
-            mpas_input->domain(i, 4) = mr.get_element_data(surface_parent_ids[i], "Temperature3d");
+            mpas_input->domain(i, 3) = salinity[i];
+            mpas_input->domain(i, 4) = temperature[i];            
         }
 
-        // Add the volumetric cells to the PointSet
-        for (int i = 0; i < mr.num_cells("Polyhedron8"); i++)
+        // Add boundary data
+        vector<EntityHandle> parent;
+        int offset = mbr->sourceElements.size();
+        for (int j = 0; j < mbr->sourceBdryHexs.size(); j++)
         {
-            centroid.clear();
-            centroid.assign(3, 0); // Fill with all zeros
-            cell_vertices.clear();
+            mbr->mb->get_coords(&mbr->sourceBdryHexs[j], 1, centroid);
+            mpas_input->domain(offset + j, 0) = centroid[0];
+            mpas_input->domain(offset + j, 1) = centroid[1];
+            mpas_input->domain(offset + j, 2) = centroid[2];
 
-            // Get vertices of cell
-            // Use a Set to hold vertices because they will be duplicated as 
-            // we loop of each face of the cell. (Set de-duplicates for us)
-            faces = mr.get_faces("Polyhedron8", i);
-            for (auto face_id : faces)
+            // Get tag data associated to parent cell
+            parent.clear();
+            mbr->mb->get_adjacencies(&mbr->sourceBdryHexs[j], 1, 3, false, parent);
+            if (parent.size() != 1)
             {
-                verts = mr.get_faces(face_id);
-                for (auto v : verts)
-                {
-                    cell_vertices.insert(v);
-                }
+                cerr << "ERROR: Expected a single parent element" << endl;
+                exit(1);
             }
 
-            // Compute cell centroid
-            int num_vertices = cell_vertices.size();
-            for (auto v : cell_vertices)
-            {
-                vertex_coords = mr.get_coords(v);
-
-                // Compute bounding box to cover all MPAS vertices, not just their centroids
-                // The depth levels that define the knot distribution are taken from the MPAS
-                // data file, so we need to make sure that each of these depth levels is inside
-                // our bounding box. If the bounding box was set from centroids only, then the
-                // lowest or highest depths might lie outside the box.
-                if (vertex_coords[0] < mins[0]) mins[0] = vertex_coords[0];
-                if (vertex_coords[0] > maxs[0]) maxs[0] = vertex_coords[0];
-                if (vertex_coords[1] < mins[1]) mins[1] = vertex_coords[1];
-                if (vertex_coords[1] > maxs[1]) maxs[1] = vertex_coords[1];
-                if (vertex_coords[2] < mins[2]) mins[2] = vertex_coords[2];
-                if (vertex_coords[2] > maxs[2]) maxs[2] = vertex_coords[2];
-                centroid[0] += vertex_coords[0] / num_vertices;
-                centroid[1] += vertex_coords[1] / num_vertices;
-                centroid[2] += vertex_coords[2] / num_vertices;
-            }
-
-            // Add to PointSet with variable data
-            mpas_input->domain(num_surface_faces + i, 0) = centroid[0];
-            mpas_input->domain(num_surface_faces + i, 1) = centroid[1];
-            mpas_input->domain(num_surface_faces + i, 2) = centroid[2];
-            mpas_input->domain(num_surface_faces + i, 3) = mr.get_data("Polyhedron8", "Salinity3d")[i];
-            mpas_input->domain(num_surface_faces + i, 4) = mr.get_data("Polyhedron8", "Temperature3d")[i];
+            int parentIdx = mbr->sourceEltIdxMap[parent[0]];
+            mpas_input->domain(offset + j, 3) = salinity[parentIdx];
+            mpas_input->domain(offset + j, 4) = temperature[parentIdx]; 
         }
 
-        // Update bounding box if roms bounds were passed
-        if (roms_mins.size() == 3 && roms_maxs.size() == 3)
-        {
-            bounds_mins = mpas_input->domain.colwise().minCoeff();
-            bounds_maxs = mpas_input->domain.colwise().maxCoeff();
-            core_mins   = bounds_mins.head(dom_dim);
-            core_maxs   = bounds_maxs.head(dom_dim);
-
-            if (roms_mins(0) < mins(0))
-            {
-                cout << "Updating xmin" << endl;
-                mins(0) = roms_mins(0);
-            }
-            if (roms_maxs(0) > maxs(0))
-            {
-                cout << "Updating xmax" << endl;
-                maxs(0) = roms_maxs(0);
-            }
-            if (roms_mins(1) < mins(1))
-            {
-                cout << "Updating ymin" << endl;
-                mins(1) = roms_mins(1);
-            }
-            if (roms_maxs(1) > maxs(1))
-            {
-                cout << "Updating ymax" << endl;
-                maxs(1) = roms_maxs(1);
-            }
-            if (roms_mins(2) < mins(2))
-            {
-                cout << "Updating zmin" << endl;
-                mins(2) = roms_mins(2);
-            }
-            if (roms_maxs(2) > maxs(2))
-            {
-                cout << "Updating zmax" << endl;
-                maxs(2) = roms_maxs(2);
-            }
-        }
+        // Compute total bounding box around mpas and roms
+        computeBbox();
 
         // Set parametrization
-        mpas_input->set_domain_params(mins, maxs);
+        mpas_input->set_domain_params(bboxMins, bboxMaxs);
 
         // Set up MFA from user-specified options
         this->setup_MFA(cp, mfa_info);
@@ -714,33 +376,54 @@ struct CBlock : public BlockBase<T>
         core_maxs   = bounds_maxs.head(dom_dim);
 
         // debug
-        mfa::print_bbox(mins, maxs, "MPAS Custom");
+        mfa::print_bbox(bboxMins, bboxMaxs, "MPAS Custom");
         mfa::print_bbox(core_mins, core_maxs, "MPAS Core");
         mfa::print_bbox(bounds_mins, bounds_maxs, "MPAS Bounds");
     }
 
     template <typename V>
-    void read_roms_data_3d(
+    void read_roms_data_3d_mb(
             const   diy::Master::ProxyWithLink& cp,
                     string filename)
     {
+        const bool decodeAtVertices = false;
+
         VectorXi model_dims(1);
-        model_dims << 3;          // geometry, bathymetry, salinity, temperature
+        model_dims(0) = 3;      // geometric coordinates only
 
-        // Only reading vertex locations
-        MOABReader<V> mr(filename);
+        mbr->loadTargetMesh(filename);
+        mbr->targetVertexBounds(targetMins, targetMaxs);
 
-        // Create MFA PointSet and add vertices
-        roms_input = new mfa::PointSet<T>(dom_dim, model_dims, mr.num_verts());
-        for (int i = 0; i < roms_input->npts; i++)
+        int npts = 0;
+        V coord[3];
+        int i = 0;
+        if (decodeAtVertices)
         {
-            roms_input->domain(i, 0) = mr.coords[i][0];
-            roms_input->domain(i, 1) = mr.coords[i][1];
-            roms_input->domain(i, 2) = mr.coords[i][2];
+            npts = mbr->targetVertices.size();
+            roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
+            for (auto it = mbr->targetVertices.begin(), end = mbr->targetVertices.end(); it != end; ++it, ++i)
+            {
+                mbr->mb->get_coords(&(*it), 1, coord);
+                roms_input->domain(i, 0) = coord[0];
+                roms_input->domain(i, 1) = coord[1];
+                roms_input->domain(i, 2) = coord[2];
+            }
+        }
+        else
+        {
+            npts = mbr->targetElements.size();
+            roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
+            for (auto it = mbr->targetElements.begin(), end = mbr->targetElements.end(); it != end; ++it, ++i)
+            {
+                mbr->mb->get_coords(&(*it), 1, coord);
+                roms_input->domain(i, 0) = coord[0];
+                roms_input->domain(i, 1) = coord[1];
+                roms_input->domain(i, 2) = coord[2];
+            }
         }
 
-        // Compute parametrization and set up MFA
-        roms_input->set_domain_params();
+        // Compute input parametrization
+        roms_input->set_domain_params(targetMins, targetMaxs);
 
         // Find block bounds for coordinates and values
         bounds_mins = roms_input->domain.colwise().minCoeff();
@@ -753,150 +436,32 @@ struct CBlock : public BlockBase<T>
         mfa::print_bbox(bounds_mins, bounds_maxs, "ROMS Bounds");
     }
 
-    template <typename V>
-    void read_mpas_data(
-            const   diy::Master::ProxyWithLink& cp,
-                    string      mpasfile,
-                    MFAInfo&    mfa_info)
+    void convertParams( const mfa::PointSet<T>* source,
+                        const mfa::PointSet<T>* target,
+                              mfa::PointSet<T>* convert)
     {
-        VectorXi model_dims(4);
-        model_dims << 3, 1, 1, 1;          // geometry, bathymetry, salinity, temperature
+        VectorX<T> tMins = target->mins();
+        VectorX<T> tMaxs = target->maxs();
+        VectorX<T> sMins = source->mins();
+        VectorX<T> sMaxs = source->maxs();
+        VectorX<T> sDiff = sMaxs - sMins;
 
-        // Read HDF5 data into STL vectors
-        vector<vector<V>>           coords;
-        vector<vector<vector<int>>> conn_mats;
-        vector<vector<V>>           depth_vecs, salinity_vecs, temp_vecs;
-        int                         ncells = 0;
-
-        const int ndatasets = 3;
-        string filename = mpasfile;
-        string coords_name = "tstt/nodes/coordinates";
-        vector<string> connect_names;
-        vector<string> var_names;
-        conn_mats.resize(ndatasets);
-        depth_vecs.resize(ndatasets);
-        salinity_vecs.resize(ndatasets);
-        temp_vecs.resize(ndatasets);
-        connect_names.push_back("tstt/elements/Polygon5/connectivity");
-        connect_names.push_back("tstt/elements/Polygon6/connectivity");
-        connect_names.push_back("tstt/elements/Polygon7/connectivity");
-        var_names.push_back("tstt/elements/Polygon5/tags/");
-        var_names.push_back("tstt/elements/Polygon6/tags/");
-        var_names.push_back("tstt/elements/Polygon7/tags/");
-
-        // Read vertex coordinates
-        MOABReader<V>::read_hdf5_dataset_2d(filename, coords_name, coords, true);
-
-        // For each kind of polygonal cell, read each variable and cell connectivity
-        for (int n = 0; n < ndatasets; n++)
+        // Compute parametrization of target points w.r.t. source domain
+        shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
+        new_param->param_list.resize(target->npts, dom_dim);
+        for (size_t k = 0; k < dom_dim; k++)
         {
-            // read each variable into buffers
-            MOABReader<V>::read_hdf5_dataset_1d(filename, var_names[n]+"bottomDepth", depth_vecs[n], true);
-            MOABReader<V>::read_hdf5_dataset_1d(filename, var_names[n]+"salinity", salinity_vecs[n], true);
-            MOABReader<V>::read_hdf5_dataset_1d(filename, var_names[n]+"temperature", temp_vecs[n], true);
-
-            // read cell connectivity
-            MOABReader<V>::read_hdf5_dataset_2d(filename, connect_names[n], conn_mats[n], true);
-            ncells += conn_mats[n].size();
+            new_param->param_list.col(k) = (target->domain.col(k).array() - sMins(k)) * (1/sDiff(k));
         }
 
-        // Create MFA PointSet to hold all data
-        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, ncells);
-        
-        // Fill pointset
-        int ofst = 0;
-        VectorX<T> centroid(3);
-        for (int n = 0; n < ndatasets; n++) // for each class of polygon
+        // Set parametrization object for the PointSet we will decode into
+        if (convert)
         {
-            int cellsize = conn_mats[n][0].size();
-            for (int i = 0; i < conn_mats[n].size(); i++)   // for each cell in this class
-            {
-                // compute cell centroid
-                centroid.setZero();
-                for (int j = 0; j < cellsize; j++)      // for each vertex in cell
-                {
-                    int vid = conn_mats[n][i][j] - 1;
-                    centroid(0) += coords[vid][0];
-                    centroid(1) += coords[vid][1];
-                    centroid(2) += coords[vid][2];
-                }
-                centroid = (1.0/cellsize) * centroid;
-
-                // Fill centroid coordinates and depth associated to the cell
-                mpas_input->domain(ofst+i, 0) = centroid(0);
-                mpas_input->domain(ofst+i, 1) = centroid(1);
-                mpas_input->domain(ofst+i, 2) = centroid(2);
-                mpas_input->domain(ofst+i, 3) = depth_vecs[n][i];
-                mpas_input->domain(ofst+i, 4) = salinity_vecs[n][i];
-                mpas_input->domain(ofst+i, 5) = temp_vecs[n][i];                
-            }
-
-            // Move the offset for the next class of polygons
-            ofst += conn_mats[n].size();
+            cerr << "Overwriting existing pointset in convertParams()" << endl;
+            delete convert;
+            convert = nullptr;
         }
-
-        // Compute parametrization and set up MFA
-        mpas_input->set_domain_params();
-        this->setup_MFA(cp, mfa_info);
-
-        // Find block bounds for coordinates and values
-        bounds_mins = mpas_input->domain.colwise().minCoeff();
-        bounds_maxs = mpas_input->domain.colwise().maxCoeff();
-        core_mins   = bounds_mins.head(dom_dim);
-        core_maxs   = bounds_maxs.head(dom_dim);
-
-        // debug
-        mfa::print_bbox(core_mins, core_maxs, "Core");
-        mfa::print_bbox(bounds_mins, bounds_maxs, "Bounds");
-    }
-
-
-    template <typename V>               // floating point type used in HDF5 file (assumed to be only one)
-    void read_roms_data(
-            const   diy::Master::ProxyWithLink& cp,
-                    string      romsfile)
-    {        
-        VectorXi model_dims(2);
-        model_dims << 3, 1;          // reading geometry and bathymetry only
-
-        // Read HDF5 data into STL vectors
-        vector<vector<V>>   coords;
-        vector<vector<int>> conn_mat;
-        vector<V>           depth_vec;
-        size_t              npts = 0;           // total number of points
-
-        // roms
-        string filename = romsfile;
-        string coords_name = "tstt/nodes/coordinates";
-        string cell_connect_name = "tstt/elements/Quad4/connectivity";
-        string node_depth_name = "tstt/nodes/tags/bathymetry";
-
-        MOABReader<V>::read_hdf5_dataset_2d(filename, coords_name, coords, true);
-        MOABReader<V>::read_hdf5_dataset_1d(filename, node_depth_name, depth_vec, true);
-        MOABReader<V>::read_hdf5_dataset_2d(filename, cell_connect_name, conn_mat, true);
-
-        npts = coords.size();
-
-        // Initialize input PointSet from buffers
-        roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
-        for (size_t i = 0; i < roms_input->npts; i++)
-        {
-            roms_input->domain(i, 0) = coords[i][0];
-            roms_input->domain(i, 1) = coords[i][1];
-            roms_input->domain(i, 2) = coords[i][2];
-            roms_input->domain(i, 3) = depth_vec[i];
-        }
-        roms_input->set_domain_params();
-
-        // Find block bounds for coordinates and values
-        bounds_mins = roms_input->domain.colwise().minCoeff();
-        bounds_maxs = roms_input->domain.colwise().maxCoeff();
-        core_mins   = bounds_mins.head(dom_dim);
-        core_maxs   = bounds_maxs.head(dom_dim);
-
-        // debug
-        mfa::print_bbox(core_mins, core_maxs, "Core");
-        mfa::print_bbox(bounds_mins, bounds_maxs, "Bounds");
+        convert = new mfa::PointSet<T>(new_param, source->model_dims());
     }
 
     void remap(
@@ -928,22 +493,24 @@ struct CBlock : public BlockBase<T>
         mfa->setKnots(allknots);
         mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted);
 
-        VectorX<T> roms_mins = roms_input->mins();
-        VectorX<T> roms_maxs = roms_input->maxs();
-        VectorX<T> mpas_mins = mpas_input->mins();
-        VectorX<T> mpas_maxs = mpas_input->maxs();
-        VectorX<T> mpas_diff = mpas_maxs - mpas_mins;
+        // Compute parametrization of roms points w.r.t mpas domain
+        convertParams(mpas_input, roms_input, mpas_approx);
+        // VectorX<T> roms_mins = roms_input->mins();
+        // VectorX<T> roms_maxs = roms_input->maxs();
+        // VectorX<T> mpas_mins = mpas_input->mins();
+        // VectorX<T> mpas_maxs = mpas_input->maxs();
+        // VectorX<T> mpas_diff = mpas_maxs - mpas_mins;
 
-        // Compute parametrization of ROMS points in terms of MPAS domain
-        shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
-        new_param->param_list.resize(roms_input->npts, dom_dim);
-        for (size_t k = 0; k < dom_dim; k++)
-        {
-            new_param->param_list.col(k) = (roms_input->domain.col(k).array() - mpas_mins(k)) * (1/mpas_diff(k));
-        }
+        // // Compute parametrization of ROMS points in terms of MPAS domain
+        // shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
+        // new_param->param_list.resize(roms_input->npts, dom_dim);
+        // for (size_t k = 0; k < dom_dim; k++)
+        // {
+        //     new_param->param_list.col(k) = (roms_input->domain.col(k).array() - mpas_mins(k)) * (1/mpas_diff(k));
+        // }
 
-        // Set parametrization object for the PointSet we will decode into
-        mpas_approx = new mfa::PointSet<T>(new_param, mpas_input->model_dims());
+        // // Set parametrization object for the PointSet we will decode into
+        // mpas_approx = new mfa::PointSet<T>(new_param, mpas_input->model_dims());
 
         // Evaluate MFA
         mfa->Decode(*mpas_approx, false);
