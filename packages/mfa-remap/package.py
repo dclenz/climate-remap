@@ -14,11 +14,15 @@ class MfaRemap(CMakePackage):
 
     version('master', branch='master')
 
+    variant('build_type', default='Release', description='CMake build type', values=('Debug', 'Release', 'RelWithDebInfo', 'MinSizeRel'))
+
+    depends_on('mfa')
     depends_on('mpich')
     depends_on('hdf5+mpi+hl', type='link')
 
     def cmake_args(self):
-        args = ['-DCMAKE_C_COMPILER=%s' % self.spec['mpich'].mpicc,
+        args = ['-DCMAKE_BUILD_TYPE=%s' % self.spec.variants['build_type'].value,
+                '-DCMAKE_C_COMPILER=%s' % self.spec['mpich'].mpicc,
                 '-DCMAKE_CXX_COMPILER=%s' % self.spec['mpich'].mpicxx,
                 '-DBUILD_SHARED_LIBS=false']
         return args
