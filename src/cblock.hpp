@@ -288,6 +288,8 @@ struct CBlock : public BlockBase<T>
 
     void computeBbox()
     {
+        bboxMins = VectorX<T>::Zero(dom_dim);
+        bboxMaxs = VectorX<T>::Zero(dom_dim);
         for (int i = 0; i < dom_dim; i++)
         {
             bboxMins(i) = std::min(sourceMins(i), targetMins(i));
@@ -423,7 +425,7 @@ struct CBlock : public BlockBase<T>
         }
 
         // Compute input parametrization
-        roms_input->set_domain_params(targetMins, targetMaxs);
+        roms_input->set_domain_params();
 
         // Find block bounds for coordinates and values
         bounds_mins = roms_input->domain.colwise().minCoeff();
@@ -436,9 +438,9 @@ struct CBlock : public BlockBase<T>
         mfa::print_bbox(bounds_mins, bounds_maxs, "ROMS Bounds");
     }
 
-    void convertParams( const mfa::PointSet<T>* source,
-                        const mfa::PointSet<T>* target,
-                              mfa::PointSet<T>* convert)
+    void convertParams( const mfa::PointSet<T>*  source,
+                        const mfa::PointSet<T>*  target,
+                              mfa::PointSet<T>*& convert)
     {
         VectorX<T> tMins = target->mins();
         VectorX<T> tMaxs = target->maxs();
