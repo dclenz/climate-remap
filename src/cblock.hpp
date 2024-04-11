@@ -517,6 +517,22 @@ struct CBlock : public BlockBase<T>
         // Evaluate MFA
         mfa->Decode(*mpas_approx, false);
 
+        Tag sal_remap_tag;
+        Tag temp_remap_tag;
+        mbr->mb->tag_get_handle("salinity_remap", 1, MB_TYPE_DOUBLE, sal_remap_tag, MB_TAG_DENSE | MB_TAG_CREAT);
+        mbr->mb->tag_get_handle("temperature_remap", 1, MB_TYPE_DOUBLE, temp_remap_tag, MB_TAG_DENSE | MB_TAG_CREAT);
+        vector<T> sal_remap_data(mpas_approx->npts);
+        vector<T> temp_remap_data(mpas_approx->npts);
+        for (int i = 0; i < mpas_approx->npts; i++)
+        {
+            sal_remap_data[i] = mpas_approx->domain(i, 3);
+            temp_remap_data[i] = mpas_approx->domain(i, 4);
+        }
+        mbr->mb->tag_set_data(sal_remap_tag, mbr->targetElements, sal_remap_data.data());
+        mbr->mb->tag_set_data(temp_remap_tag, mbr->targetElements, temp_remap_data.data());
+
+        mbr->mb->write_mesh("remap_out.vtk", &mbr->targetFileSet, 1);
+
         // Move pointers around for visualizing in Paraview
         input = mpas_input;
         mpas_input = nullptr;
