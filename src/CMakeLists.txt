@@ -1,8 +1,8 @@
 include_directories         (${CMAKE_SOURCE_DIR}/src)          # needed for block.hpp and opts.h
 
 add_executable              (mfa_remap              remap.cpp)
-target_link_libraries       (remap                  ${libraries})
-set_property                (TARGET remap           PROPERTY INSTALL_RPATH_USE_LINK_PATH TRUE)
+target_link_libraries       (mfa_remap              ${libraries})
+set_property                (TARGET mfa_remap       PROPERTY INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 add_executable              (write_vtk              write_vtk.cpp writer.cpp)
 target_link_libraries       (write_vtk              ${libraries})
