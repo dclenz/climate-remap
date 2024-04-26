@@ -28,16 +28,16 @@ endif                       ()
 # Threads
 find_package                (Threads)
 
-# DIY
-option                      (build_examples "" OFF)
-option                      (build_tests "" OFF)
-add_subdirectory            (ext/diy)
-set                         (libraries ${libraries} diy)
-
-# fmt
-option                      (FMT_INSTALL "" OFF)
-add_subdirectory            (ext/fmt)
-set                         (libraries ${libraries} fmt::fmt)
+# # DIY
+# option                      (build_examples "" OFF)
+# option                      (build_tests "" OFF)
+# add_subdirectory            (ext/diy)
+# set                         (libraries ${libraries} diy)
+# 
+# # fmt
+# option                      (FMT_INSTALL "" OFF)
+# add_subdirectory            (ext/fmt)
+# set                         (libraries ${libraries} fmt::fmt)
 
 # Moab
 if                          (NOT DEFINED MOAB_PATH AND DEFINED ENV{MOAB_PATH})
