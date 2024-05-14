@@ -21,6 +21,8 @@ spack add mfa
 spack develop mfa-remap@master
 spack add mfa-remap
 
+spack add henson+python+mpi-wrappers
+
 # install everything in environment
 echo "installing dependencies in environment"
 spack install mfa
@@ -32,6 +34,7 @@ echo "setting flags for building moab-example"
 export MFA_PATH=`spack location -i mfa`
 export HIGHFIVE_PATH=`spack location -i highfive`
 export MOAB_PATH=`spack location -i moab`
+export HENSON_PATH=`spack location -i henson`
 
 echo "installing mfa-remap"
 spack install mfa-remap

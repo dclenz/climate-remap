@@ -60,6 +60,22 @@ message                     ("MOAB_INCLUDE_DIR = ${MOAB_INCLUDE_DIR}")
 set                         (libraries ${libraries} ${MOAB_LIBRARY} ${MOAB_IMESH_LIBRARY})
 include_directories         (SYSTEM ${MOAB_INCLUDE_DIR})
 
+# Henson
+if                          (HENSON_LIBRARY AND HENSON_PMPI_LIBRARY)
+  message                   ("HENSON_LIBRARY = " ${HENSON_LIBRARY})
+  message                   ("HENSON_PMPI_LIBRARY = " ${HENSON_PMPI_LIBRARY})
+  set                       (HENSON_LIBRARIES ${HENSON_PMPI_LIBRARY} ${HENSON_LIBRARY})
+else                        ()
+  message                   ("Looking for HENSON")
+  find_library              (HENSON_LIBRARY henson)
+  find_library              (HENSON_PMPI_LIBRARY henson-pmpi)
+  message                   ("found HENSON_LIBRARY = " ${HENSON_LIBRARY})
+  message                   ("found HENSON_PMPI_LIBRARY = " ${HENSON_PMPI_LIBRARY})
+  set                       (HENSON_LIBRARIES ${HENSON_PMPI_LIBRARY} ${HENSON_LIBRARY})
+endif                       ()
+set                         (libraries ${libraries} ${HENSON_LIBRARIES})
+include_directories         (${HENSON_INCLUDE_DIR})
+
 # HDF5
 if                          (NOT DEFINED HDF5_PATH AND DEFINED ENV{HDF5_PATH})
     set                     (HDF5_PATH $ENV{HDF5_PATH})
