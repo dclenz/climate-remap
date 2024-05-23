@@ -23,6 +23,7 @@ class MfaRemap(CMakePackage):
     depends_on('mpich')
     depends_on('hdf5+mpi+hl', type='link')
     depends_on('highfive')
+    depends_on('henson@master+python+mpi-wrappers')
 
     def cmake_args(self):
         args = ['-DCMAKE_BUILD_TYPE=%s' % self.spec.variants['build_type'].value,
