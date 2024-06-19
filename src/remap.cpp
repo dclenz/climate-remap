@@ -25,14 +25,25 @@
 #include "example-setup.hpp"
 #include "cblock.hpp"
 
+//moab
+#include    "moab/ParallelComm.hpp"
+
 using namespace std;
 using B = CBlock<real_t>;
+
+#define ERR {if(rval!=MB_SUCCESS)printf("MOAB error at line %d in %s\n", __LINE__, __FILE__);}
 
 int main(int argc, char** argv)
 {
     // initialize MPI
     diy::mpi::environment  env(argc, argv);     // equivalent of MPI_Init(argc, argv)/MPI_Finalize()
-    diy::mpi::communicator world;               // equivalent of MPI_COMM_WORLD
+
+    // for some reason, local has to be a duplicate of world, not world itself
+    diy::mpi::communicator      world;
+    MPI_Comm                    local;
+    MPI_Comm_dup(world, &local);
+    diy::mpi::communicator local_(local);
+
     int mem_blocks  = -1;                       // everything in core
     int num_threads = 1;                        // needed in order to do timing
 
@@ -94,6 +105,40 @@ int main(int argc, char** argv)
                         regularization, reg1and2, adaptive, e_threshold, rounds);
     echo_data_settings(input, "", 0, 0);
 
+    // ---------- debug: test of reading files --------------
+    // TODO: REMOVE once I know how to run the actual remap code
+
+    std::string mpas_infile = "mpas_outfile.h5m";
+    std::string roms_infile = "roms_outfile.h5m";
+    std::string read_opts   = "PARALLEL=READ_PART;PARTITION=PARALLEL_PARTITION;PARALLEL_RESOLVE_SHARED_ENTS;DEBUG_IO=3;";
+    ErrorCode   rval;
+
+    // initialize moab for mpas file
+    Interface*              mpas_mbi = new Core();                              // moab interface
+    ParallelComm*           mpas_pc  = new ParallelComm(mpas_mbi, local);     // moab communicator
+    EntityHandle            mpas_root;
+    rval = mpas_mbi->create_meshset(MESHSET_SET, mpas_root); ERR(rval);
+
+    // initialize moab for roms file
+    Interface*              roms_mbi = new Core();                              // moab interface
+    ParallelComm*           roms_pc  = new ParallelComm(roms_mbi, local);     // moab communicator
+    EntityHandle            roms_root;
+    rval = roms_mbi->create_meshset(MESHSET_SET, roms_root); ERR(rval);
+
+    // debug
+    fmt::print(stderr, "*** consumer before reading files ***\n");
+
+    // read files
+    rval = mpas_mbi->load_file(mpas_infile.c_str(), &mpas_root, read_opts.c_str() ); ERR(rval);
+    rval = roms_mbi->load_file(roms_infile.c_str(), &roms_root, read_opts.c_str() ); ERR(rval);
+
+    // debug
+    fmt::print(stderr, "*** consumer after reading files ***\n");
+
+    return 0;
+
+    // ------------- end of debug: test of reading files
+
     // initialize DIY
     diy::FileStorage          storage("./DIY.XXXXXX"); // used for blocks to be moved out of core
     diy::Master               master(world,
@@ -110,7 +155,7 @@ int main(int argc, char** argv)
     Bounds<real_t> domain(dom_dim);
     domain.min = vector<real_t>(dom_dim, 0);
     domain.max = vector<real_t>(dom_dim, 1);
-    
+
     Decomposer<real_t> decomposer(dom_dim, domain, tot_blocks);
     decomposer.decompose(world.rank(),
                          assigner,
@@ -159,7 +204,7 @@ int main(int argc, char** argv)
             b->read_mpas_data_3d_mb<double>(cp, mpasfile, mfa_info, mins, maxs);
 
             b->remap(cp, mfa_info);
-        });        
+        });
     }
     else
     {
