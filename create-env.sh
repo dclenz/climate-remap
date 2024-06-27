@@ -28,6 +28,7 @@ echo "installing dependencies in environment"
 spack install mfa
 spack install highfive
 spack install moab
+spack install henson
 
 # set build flags
 echo "setting flags for building moab-example"

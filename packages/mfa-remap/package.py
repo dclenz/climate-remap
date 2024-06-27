@@ -8,12 +8,9 @@ from spack import *
 class MfaRemap(CMakePackage):
     """Example of remapping two simulations with MFA"""
 
-#     homepage = "https://github.com/dclenz/climate-remap"
-#     url      = "https://github.com/dclenz/climate-remap"
-#     git      = "https://github.com/dclenz/climate-remap.git"
-    homepage = "https://github.com/tpeterka/climate-remap"
-    url      = "https://github.com/tpeterka/climate-remap"
-    git      = "https://github.com/tpeterka/climate-remap.git"
+    homepage = "https://github.com/dclenz/climate-remap"
+    url      = "https://github.com/dclenz/climate-remap"
+    git      = "https://github.com/dclenz/climate-remap.git"
 
     version('master', branch='master')
 
