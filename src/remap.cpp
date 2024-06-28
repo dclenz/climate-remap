@@ -44,28 +44,25 @@ int main(int argc, char** argv)
     MPI_Comm_dup(world, &local);
     diy::mpi::communicator local_(local);
 
-    int mem_blocks  = -1;                       // everything in core
-    int num_threads = 1;                        // needed in order to do timing
+    int tot_blocks = 1;                     // number of DIY blocks
+    int mem_blocks  = -1;                   // everything in core
+    int num_threads = 1;                    // set single threaded for timing
 
     // default command line arguments
     int         pt_dim          = 3;        // dimension of input points
     int         dom_dim         = 2;        // dimension of domain (<= pt_dim)
-    int         scalar          = 1;        // flag for scalar or vector-valued science variables (0 == multiple scalar vars)
-    int         geom_degree     = 1;        // degree for geometry (same for all dims)
-    int         vars_degree     = 4;        // degree for science variables (same for all dims)
-    int         ndomp           = 0;      // input number of domain points (same for all dims)
-    int         geom_nctrl      = -1;       // input number of control points for geometry (same for all dims)
+    int         vars_degree     = 2;        // degree for science variables (same for all dims)
     vector<int> vars_nctrl      = {11};     // initial # control points for all science variables (default same for all dims)
-    int         structured      = 1;        // input data format (bool 0/1)
-    int         rand_seed       = -1;       // seed to use for random data generation (-1 == no randomization)
     real_t      regularization  = 0;        // smoothing parameter for models with non-uniform input density (0 == no smoothing)
     int         reg1and2        = 0;        // flag for regularizer: 0 = regularize only 2nd derivs. 1 = regularize 1st and 2nd
-    int         verbose         = 1;        // MFA verbosity (0 = no extra output)
-    int         tot_blocks      = 1;        // 
     int         adaptive        = 0;        // do analytical encode (0/1)
     real_t      e_threshold     = 1e-1;     // error threshold for adaptive fitting
-    int         rounds          = 0;
+    int         rounds          = 0;        // maximum rounds of adaptive MFA refinement (0 = no limit)
+    int         verbose         = 0;        // MFA verbosity (0 = no extra output)
     bool        help            = false;    // show help
+
+    const int geom_degree = 1;
+    const int geom_nctrl = -1;
 
     string romsfile;
     string mpasfile;
@@ -73,19 +70,14 @@ int main(int argc, char** argv)
     opts::Options ops;
     ops >> opts::Option('d', "pt_dim",      pt_dim,     " dimension of points");
     ops >> opts::Option('m', "dom_dim",     dom_dim,    " dimension of domain");
-    ops >> opts::Option('l', "scalar",      scalar,     " flag for scalar or vector-valued science variables");
-    ops >> opts::Option('p', "geom_degree", geom_degree," degree in each dimension of geometry");
     ops >> opts::Option('q', "vars_degree", vars_degree," degree in each dimension of science variables");
-    ops >> opts::Option('n', "ndomp",       ndomp,      " number of input points in each dimension of domain");
-    ops >> opts::Option('g', "geom_nctrl",  geom_nctrl, " number of control points in each dimension of geometry");
     ops >> opts::Option('v', "vars_nctrl",  vars_nctrl, " number of control points in each dimension of all science variables");
-    ops >> opts::Option('h', "help",        help,       " show help");
-    ops >> opts::Option('x', "structured",  structured, " input data format (default=structured=true)");
-    ops >> opts::Option('y', "rand_seed",   rand_seed,  " seed for random point generation (-1 = no randomization, default)");
     ops >> opts::Option('b', "regularization", regularization, "smoothing parameter for models with non-uniform input density");
     ops >> opts::Option('k', "reg1and2",    reg1and2,   " regularize both 1st and 2nd derivatives (if =1) or just 2nd (if =0)");
     ops >> opts::Option('z' ,"romsfile",     romsfile,  " file path for roms data file");
     ops >> opts::Option('z', "mpasfile",     mpasfile,  " file path for mpas data file");
+    ops >> opts::Option('x', "verbose",     verbose,    " MFA verbosity (0 = no extra output)");
+    ops >> opts::Option('h', "help",        help,       " show help");
 
 
     if (!ops.parse(argc, argv) || help)
@@ -96,7 +88,7 @@ int main(int argc, char** argv)
     }
 
     // print input arguments
-    echo_mfa_settings("simple remap test", dom_dim, pt_dim, scalar, geom_degree, geom_nctrl, vars_degree, vars_nctrl,
+    echo_mfa_settings("simple remap test", dom_dim, pt_dim, 1, geom_degree, geom_nctrl, vars_degree, vars_nctrl,
                         regularization, reg1and2, adaptive, e_threshold, rounds);
     fmt::print("MPAS file name: {}\n", mpasfile);
     fmt::print("ROMS file name: {}\n", romsfile);
@@ -124,8 +116,7 @@ int main(int argc, char** argv)
                          [&](int gid, const Bounds<real_t>& core, const Bounds<real_t>& bounds, const Bounds<real_t>& domain, const RCLink<real_t>& link)
                          { B::add(gid, core, bounds, domain, link, master, dom_dim, pt_dim, 0.0); });
 
-    // We assume that dom_dim == geom_dim
-    // Different examples can reset this below
+    // Set up problem dimensionality
     vector<int> model_dims = {dom_dim, pt_dim - dom_dim};
     if (dom_dim == 2)
     {
@@ -141,14 +132,8 @@ int main(int argc, char** argv)
         exit(1);
     }
 
-    // set up parameters for examples
+    // Set up MFA
     MFAInfo     mfa_info(dom_dim, verbose);
-    
-    // If only one value for vars_nctrl was parsed, assume it applies to all dims
-    if (vars_nctrl.size() == 1)
-    {
-        vars_nctrl = vector<int>(dom_dim, vars_nctrl[0]);
-    }
 
     set_mfa_info(dom_dim, model_dims, geom_degree, geom_nctrl, vars_degree, vars_nctrl, mfa_info);
     mfa_info.verbose          = verbose;
@@ -171,13 +156,11 @@ int main(int argc, char** argv)
     encode_time = MPI_Wtime() - encode_time;
 
     // print results
-    fprintf(stderr, "\n------- Final block results --------\n");
+    fmt::print("\n------- Final block results --------\n");
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
             { b->print_model(cp); });
-    fprintf(stderr, "encoding time         = %.3lf s.\n", encode_time);
-    // if (opts.error)
-    //     fprintf(stderr, "decoding time         = %.3lf s.\n", decode_time);
-    fprintf(stderr, "-------------------------------------\n\n");
+    fmt::print("encoding time         = {:.3} s.\n", encode_time);
+    fmt::print("-------------------------------------\n\n");
 
     // save the results in diy format
     string outname = "remap.mfa";
