@@ -303,7 +303,7 @@ struct CBlock : public BlockBase<T>
     void read_mpas_data_3d_mb(
             const   diy::Master::ProxyWithLink& cp,
                     string filename,
-                    MFAInfo& mfa_info,
+                    mfa::MFAInfo& mfa_info,
                     const VectorX<T>& roms_mins = VectorX<T>(),
                     const VectorX<T>& roms_maxs = VectorX<T>())
     {
@@ -468,7 +468,7 @@ struct CBlock : public BlockBase<T>
 
     void remap(
         const diy::Master::ProxyWithLink&   cp,
-        MFAInfo&    info)
+        mfa::MFAInfo&    info)
     {
         // All depth levels
         vector<T> depth1 = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170.197, 180.761, 191.821, 203.499, 215.923, 229.233, 243.584, 259.156, 276.152, 294.815, 315.424, 338.312, 363.875, 392.58, 424.989, 461.767, 503.707, 551.749, 606.997, 670.729, 744.398, 829.607, 928.043, 1041.37, 1171.04, 1318.09, 1482.9, 1664.99, 1863.01, 2074.87, 2298.04, 2529.9, 2768.1, 3010.67, 3256.14};

@@ -58,7 +58,7 @@ int main(int argc, char** argv)
     int         adaptive        = 0;        // do analytical encode (0/1)
     real_t      e_threshold     = 1e-1;     // error threshold for adaptive fitting
     int         rounds          = 0;        // maximum rounds of adaptive MFA refinement (0 = no limit)
-    int         verbose         = 0;        // MFA verbosity (0 = no extra output)
+    int         verbose         = 1;        // MFA verbosity (0 = no extra output)
     bool        help            = false;    // show help
 
     const int geom_degree = 1;
@@ -76,7 +76,7 @@ int main(int argc, char** argv)
     ops >> opts::Option('k', "reg1and2",    reg1and2,   " regularize both 1st and 2nd derivatives (if =1) or just 2nd (if =0)");
     ops >> opts::Option('z' ,"romsfile",     romsfile,  " file path for roms data file");
     ops >> opts::Option('z', "mpasfile",     mpasfile,  " file path for mpas data file");
-    ops >> opts::Option('x', "verbose",     verbose,    " MFA verbosity (0 = no extra output)");
+    ops >> opts::Option('x', "verbose",     verbose,    " MFA verbosity (0 = no output, 1 = limited output, 2 = high output)");
     ops >> opts::Option('h', "help",        help,       " show help");
 
 
@@ -133,7 +133,7 @@ int main(int argc, char** argv)
     }
 
     // Set up MFA
-    MFAInfo     mfa_info(dom_dim, verbose);
+    mfa::MFAInfo     mfa_info(dom_dim, verbose);
 
     set_mfa_info(dom_dim, model_dims, geom_degree, geom_nctrl, vars_degree, vars_nctrl, mfa_info);
     mfa_info.verbose          = verbose;
