@@ -56,7 +56,6 @@ int main(int argc, char** argv)
     int         ndomp           = 0;      // input number of domain points (same for all dims)
     int         geom_nctrl      = -1;       // input number of control points for geometry (same for all dims)
     vector<int> vars_nctrl      = {11};     // initial # control points for all science variables (default same for all dims)
-    string      input           = "sinc";   // input dataset
     int         structured      = 1;        // input data format (bool 0/1)
     int         rand_seed       = -1;       // seed to use for random data generation (-1 == no randomization)
     real_t      regularization  = 0;        // smoothing parameter for models with non-uniform input density (0 == no smoothing)
@@ -80,7 +79,6 @@ int main(int argc, char** argv)
     ops >> opts::Option('n', "ndomp",       ndomp,      " number of input points in each dimension of domain");
     ops >> opts::Option('g', "geom_nctrl",  geom_nctrl, " number of control points in each dimension of geometry");
     ops >> opts::Option('v', "vars_nctrl",  vars_nctrl, " number of control points in each dimension of all science variables");
-    ops >> opts::Option('i', "input",       input,      " input dataset");
     ops >> opts::Option('h', "help",        help,       " show help");
     ops >> opts::Option('x', "structured",  structured, " input data format (default=structured=true)");
     ops >> opts::Option('y', "rand_seed",   rand_seed,  " seed for random point generation (-1 = no randomization, default)");
@@ -160,42 +158,16 @@ int main(int argc, char** argv)
 
 
     double encode_time = MPI_Wtime();
-    if (input=="roms")
+    master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
     {
-        master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
-        {
-            b->read_roms_data_3d_mb<real_t>(cp, romsfile);
-            b->input = b->roms_input;
-            b->roms_input = nullptr;
-        });
-    }
-    else if (input=="mpas")
-    {
-        master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
-        {
-            b->read_mpas_data_3d_mb<real_t>(cp, mpasfile, mfa_info);
-            b->input = b->mpas_input;
-            b->mpas_input = nullptr;
-        });
-    }
-    else if (input=="remap")
-    {
-        master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
-        {
-            b->read_roms_data_3d_mb<double>(cp, romsfile); 
+        b->read_roms_data_3d_mb<double>(cp, romsfile); 
 
-            VectorX<real_t> mins = b->roms_input->mins();
-            VectorX<real_t> maxs = b->roms_input->maxs();
-            b->read_mpas_data_3d_mb<double>(cp, mpasfile, mfa_info, mins, maxs);
+        VectorX<real_t> mins = b->roms_input->mins();
+        VectorX<real_t> maxs = b->roms_input->maxs();
+        b->read_mpas_data_3d_mb<double>(cp, mpasfile, mfa_info, mins, maxs);
 
-            b->remap(cp, mfa_info);
-        });
-    }
-    else
-    {
-        cerr << "Input keyword \'" << input << "\' not recognized. Exiting." << endl;
-        exit(0);
-    }
+        b->remap(cp, mfa_info);
+    });
     encode_time = MPI_Wtime() - encode_time;
 
     // print results
