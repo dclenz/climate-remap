@@ -22,7 +22,6 @@
 #include <diy/io/block.hpp>
 
 #include "opts.h"
-#include "example-setup.hpp"
 #include "cblock.hpp"
 
 //moab
@@ -53,6 +52,8 @@ int main(int argc, char** argv)
     int         dom_dim         = 2;        // dimension of domain (<= pt_dim)
     int         vars_degree     = 2;        // degree for science variables (same for all dims)
     vector<int> vars_nctrl      = {11};     // initial # control points for all science variables (default same for all dims)
+    string      romsfile        = "";       // data file produced by ROMS (remap target)
+    string      mpasfile        = "";       // data file produced by MPAS (remap source)
     real_t      regularization  = 0;        // smoothing parameter for models with non-uniform input density (0 == no smoothing)
     int         reg1and2        = 0;        // flag for regularizer: 0 = regularize only 2nd derivs. 1 = regularize 1st and 2nd
     int         adaptive        = 0;        // do analytical encode (0/1)
@@ -61,12 +62,10 @@ int main(int argc, char** argv)
     int         verbose         = 1;        // MFA verbosity (0 = no extra output)
     bool        help            = false;    // show help
 
-    const int geom_degree = 1;
-    const int geom_nctrl = -1;
+    const int geom_degree = 1;  // assume flat geometry
+    const int geom_nctrl = -1;  // assume flat geometry
 
-    string romsfile;
-    string mpasfile;
-
+    // Parse command line
     opts::Options ops;
     ops >> opts::Option('d', "pt_dim",      pt_dim,     " dimension of points");
     ops >> opts::Option('m', "dom_dim",     dom_dim,    " dimension of domain");
@@ -74,12 +73,10 @@ int main(int argc, char** argv)
     ops >> opts::Option('v', "vars_nctrl",  vars_nctrl, " number of control points in each dimension of all science variables");
     ops >> opts::Option('b', "regularization", regularization, "smoothing parameter for models with non-uniform input density");
     ops >> opts::Option('k', "reg1and2",    reg1and2,   " regularize both 1st and 2nd derivatives (if =1) or just 2nd (if =0)");
-    ops >> opts::Option('z' ,"romsfile",     romsfile,  " file path for roms data file");
-    ops >> opts::Option('z', "mpasfile",     mpasfile,  " file path for mpas data file");
+    ops >> opts::Option('z' ,"romsfile",    romsfile,  " file path for roms data file");
+    ops >> opts::Option('z', "mpasfile",    mpasfile,  " file path for mpas data file");
     ops >> opts::Option('x', "verbose",     verbose,    " MFA verbosity (0 = no output, 1 = limited output, 2 = high output)");
     ops >> opts::Option('h', "help",        help,       " show help");
-
-
     if (!ops.parse(argc, argv) || help)
     {
         if (world.rank() == 0)
@@ -88,8 +85,25 @@ int main(int argc, char** argv)
     }
 
     // print input arguments
-    echo_mfa_settings("simple remap test", dom_dim, pt_dim, 1, geom_degree, geom_nctrl, vars_degree, vars_nctrl,
-                        regularization, reg1and2, adaptive, e_threshold, rounds);
+    fmt::print("--------- MFA Settings ----------\n");
+    fmt::print("pt_dim = {}\t dom_dim = {}\n", pt_dim, dom_dim);
+    fmt::print("geom_deg = {}\t geom_nctrl = {}\n", geom_degree, geom_nctrl);
+    fmt::print("vars_deg = {}\t vars_nctrl = {}\n", vars_degree, mfa::print_vec(vars_nctrl));
+    fmt::print("encoding type = {}\n", adaptive ? "adaptive" : "fixed");
+    if (adaptive)
+        fmt::print("error = {}\t max rounds = {}\n", e_threshold, (rounds == 0 ? "unlimited" : to_string(rounds)));
+    
+    string reg_type = regularization == 0 ? "N/A" : (reg1and2 > 0 ? "1st and 2nd derivs" : "2nd derivs only");
+    fmt::print("regularization = {}, type: {}\n", regularization, reg_type);
+
+    string thread_type = "undefined";
+#ifdef MFA_TBB
+    thread_type = "TBB";
+#endif
+#ifdef MFA_SERIAL
+    thread_type = "serial";
+#endif
+    fmt::print("threading: {}\n", thread_type);
     fmt::print("MPAS file name: {}\n", mpasfile);
     fmt::print("ROMS file name: {}\n", romsfile);
 
@@ -109,39 +123,25 @@ int main(int argc, char** argv)
     Bounds<real_t> domain(dom_dim);
     domain.min = vector<real_t>(dom_dim, 0);
     domain.max = vector<real_t>(dom_dim, 1);
-
     Decomposer<real_t> decomposer(dom_dim, domain, tot_blocks);
     decomposer.decompose(world.rank(),
                          assigner,
                          [&](int gid, const Bounds<real_t>& core, const Bounds<real_t>& bounds, const Bounds<real_t>& domain, const RCLink<real_t>& link)
                          { B::add(gid, core, bounds, domain, link, master, dom_dim, pt_dim, 0.0); });
 
-    // Set up problem dimensionality
-    vector<int> model_dims = {dom_dim, pt_dim - dom_dim};
-    if (dom_dim == 2)
-    {
-        model_dims = {3, 1, 1, 1};
-    }
-    else if (dom_dim == 3)
-    {
-        model_dims = {3, 1, 1};
-    }
-    else
-    {
-        cerr << "ERROR: Incorrect dom_dim" << endl;
-        exit(1);
-    }
+    // Set up problem dimensionality. Should look like {3, 1, 1, ..., 1}
+    //   That is, the geometry is 3-dimensional and every variable is a scalar
+    const int geom_dim = 3;  // Assume points are always 3D
+    vector<int> model_dims(pt_dim - geom_dim + 1, 1);
+    model_dims[0] = geom_dim;
 
     // Set up MFA
-    mfa::MFAInfo     mfa_info(dom_dim, verbose);
-
-    set_mfa_info(dom_dim, model_dims, geom_degree, geom_nctrl, vars_degree, vars_nctrl, mfa_info);
-    mfa_info.verbose          = verbose;
+    mfa::MFAInfo mfa_info(dom_dim, verbose, model_dims, geom_degree, geom_nctrl, vars_degree, vars_nctrl);
     mfa_info.weighted         = 0;
     mfa_info.regularization   = regularization;
     mfa_info.reg1and2         = reg1and2;
 
-
+    // Perform the remapping
     double encode_time = MPI_Wtime();
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
     {
