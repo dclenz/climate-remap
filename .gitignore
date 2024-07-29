@@ -1,3 +1,5 @@
+data/*
+
 # Spack build objects
 spack-build-*
 spack-configure-*
