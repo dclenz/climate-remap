@@ -13,6 +13,7 @@ class MfaRemap(CMakePackage):
     git      = "https://github.com/dclenz/climate-remap.git"
 
     version('master', branch='master')
+    version('vijaysm-master', branch='vijaysm-master')
 
     variant('build_type', default='Release', description='CMake build type', values=('Debug', 'Release', 'RelWithDebInfo', 'MinSizeRel'))
 
