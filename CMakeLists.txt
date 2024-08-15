@@ -46,7 +46,7 @@ endif                       ()
 
 if                          (MOAB_PATH)
     message                 ("Found MOAB_PATH")
-    set                     (MOAB_LIBRARY ${MOAB_PATH}/lib/libMOAB.so)
+    set                     (MOAB_LIBRARY ${MOAB_PATH}/lib/libMOAB.a)
     set                     (MOAB_INCLUDE_DIR ${MOAB_PATH}/include)
     add_definitions         (-DMOAB_PATH)
 else                        ()
