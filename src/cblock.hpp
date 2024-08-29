@@ -26,6 +26,7 @@
 #include    <highfive/H5File.hpp>
 
 #include    "moab/Core.hpp"
+#include    "moab/ParallelComm.hpp"
 
 using namespace std;
 using namespace moab;
@@ -33,7 +34,10 @@ using namespace moab;
 template <typename V>
 struct MBReader
 {
+    int cellDim;
+
     Interface* mb;
+    ParallelComm* pc;
     EntityHandle sourceFileSet{0};
     EntityHandle targetFileSet{0};
 
@@ -54,14 +58,16 @@ struct MBReader
 
     ErrorCode rval;
 
-    MBReader()
+    MBReader(MPI_Comm local)
     {
         mb = new Core;
+        pc = new ParallelComm(mb, local);
     }
 
     ~MBReader()
     {
         delete mb;
+        delete pc;
     }
 
     void loadSourceMesh(string filename_)
@@ -239,8 +245,6 @@ struct CBlock : public BlockBase<T>
         mpas_error(nullptr),
         roms_input(nullptr)
     { 
-        mbr = new MBReader<T>();
-
         sourceMins = VectorX<T>::Zero(dom_dim);
         sourceMaxs = VectorX<T>::Zero(dom_dim);
         targetMins = VectorX<T>::Zero(dom_dim);
@@ -283,6 +287,11 @@ struct CBlock : public BlockBase<T>
         void save(const void* b_, diy::BinaryBuffer& bb)    { mfa::save<CBlock, T>(b_, bb); }
     static
         void load(void* b_, diy::BinaryBuffer& bb)          { mfa::load<CBlock, T>(b_, bb); }
+
+    void initMOAB(MPI_Comm local)
+    {
+        mbr = new MBReader<T>(local);
+    }
 
     void computeBbox()
     {
@@ -377,7 +386,6 @@ struct CBlock : public BlockBase<T>
 
         // debug
         mfa::print_bbox(bboxMins, bboxMaxs, "MPAS Custom");
-        mfa::print_bbox(core_mins, core_maxs, "MPAS Core");
         mfa::print_bbox(bounds_mins, bounds_maxs, "MPAS Bounds");
     }
 
