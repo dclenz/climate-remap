@@ -77,7 +77,7 @@ struct MBReader
 
         mb->create_meshset(MESHSET_SET, sourceFileSet);
         rval = mb->load_file(sourceFilename.c_str(), &sourceFileSet); MB_CHK_ERR_RET(rval);
-
+        cout << "After ROMS file read" << endl;
         // Get vertices
         rval = mb->get_entities_by_type(sourceFileSet, MBVERTEX, sourceVertices); MB_CHK_ERR_RET(rval);
 
