@@ -153,7 +153,7 @@ fmt::print("5\n");
         VectorX<real_t> maxs = b->roms_input->maxs();
         b->read_mpas_data_3d_mb<double>(cp, mpasfile, mfa_info, mins, maxs);
 
-        b->remap(cp, mfa_info);
+        b->remap(cp, mfa_info, true);
     });
     encode_time = MPI_Wtime() - encode_time;
 

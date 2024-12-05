@@ -10,7 +10,6 @@
 
 #include    <random>
 #include    <stdio.h>
-#include    <mfa/types.hpp>
 #include    <mfa/mfa.hpp>
 #include    <mfa/block_base.hpp>
 #include    <diy/master.hpp>
@@ -20,7 +19,6 @@
 #include    <diy/io/block.hpp>
 #include    <diy/io/bov.hpp>
 #include    <diy/pick.hpp>
-#include    <Eigen/Dense>
 #include    <highfive/H5DataSet.hpp>
 #include    <highfive/H5DataSpace.hpp>
 #include    <highfive/H5File.hpp>
@@ -474,7 +472,7 @@ struct CBlock : public BlockBase<T>
 
     void remap(
         const diy::Master::ProxyWithLink&   cp,
-        mfa::MFAInfo&   info
+        mfa::MFAInfo&   info,
         bool            dumpMatrices = false)
     {
         // All depth levels
