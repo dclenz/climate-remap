@@ -32,6 +32,7 @@ using namespace moab;
 template <typename V>
 struct MBReader
 {
+    const int geomDim;
     int cellDim;
 
     Interface* mb;
@@ -44,7 +45,7 @@ struct MBReader
     Range sourceVertices;
     Range sourceElements;
     map<EntityHandle, int> sourceEltIdxMap;
-    vector<EntityHandle> sourceBdryHexs;   // hexagonal faces on the domain boundary
+    vector<EntityHandle> sourceBdryFaces;   // boundary faces on the source mesh
     vector<V> sourceCoords;
 
     // Target data
@@ -56,7 +57,9 @@ struct MBReader
 
     ErrorCode rval;
 
-    MBReader(MPI_Comm local)
+    MBReader(MPI_Comm local, int dim) :
+        geomDim(3),
+        cellDim(dim)
     {
         mb = new Core;
         pc = new ParallelComm(mb, local);
@@ -75,7 +78,7 @@ struct MBReader
 
         mb->create_meshset(MESHSET_SET, sourceFileSet);
         rval = mb->load_file(sourceFilename.c_str(), &sourceFileSet); MB_CHK_ERR_RET(rval);
-        cout << "After ROMS file read" << endl;
+
         // Get vertices
         rval = mb->get_entities_by_type(sourceFileSet, MBVERTEX, sourceVertices); MB_CHK_ERR_RET(rval);
 
@@ -84,7 +87,7 @@ struct MBReader
         rval = mb->get_coords(sourceVertices, sourceCoords.data()); MB_CHK_ERR_RET(rval);
 
         // Get mesh element rage
-        rval = mb->get_entities_by_dimension(sourceFileSet, 3, sourceElements); MB_CHK_ERR_RET(rval);
+        rval = mb->get_entities_by_dimension(sourceFileSet, cellDim, sourceElements); MB_CHK_ERR_RET(rval);
 
         // Create map of element handles to range indices
         int idx = 0;
@@ -112,7 +115,7 @@ struct MBReader
         rval = mb->get_coords(targetVertices, targetCoords.data()); MB_CHK_ERR_RET(rval);
 
         // Get mesh element rage
-        rval = mb->get_entities_by_dimension(targetFileSet, 3, targetElements); MB_CHK_ERR_RET(rval);
+        rval = mb->get_entities_by_dimension(targetFileSet, cellDim, targetElements); MB_CHK_ERR_RET(rval);
 
         // Create map of element handles to range indices
         int idx = 0;
@@ -123,6 +126,8 @@ struct MBReader
         }
     }
 
+    // NOTE: In 3D, this only selects polygonal boundary faces, since this is the structure of the expected
+    //       MPAS data. However, 3D mesh boundary could be MBPOLYGON, MBQUAD, or MBTRI.
     void loadSourceBdry()
     {
         if (!sourceFileSet)
@@ -131,21 +136,37 @@ struct MBReader
             exit(1);
         }
         
-        // Get surface facets
-        Range hexs;
+        Range faces;
         vector<EntityHandle> neighbors;
-        rval = mb->get_entities_by_type(sourceFileSet, MBPOLYGON, hexs); MB_CHK_ERR_RET(rval);
-        for (auto it = hexs.begin(), end = hexs.end(); it != end; ++it)
+
+        // Get set of all faces. For a 2D mesh, the bdry is edges. In 3D it could be several cell types.
+        // Right now we only expect polygons but this should be made more generic.
+        if (cellDim == 2)
+        {
+            rval = mb->get_entities_by_type(sourceFileSet, MBEDGE, faces); MB_CHK_ERR_RET(rval);
+        }
+        else if (cellDim == 3)
+        {
+            rval = mb->get_entities_by_type(sourceFileSet, MBPOLYGON, faces); MB_CHK_ERR_RET(rval);
+        }
+        else
+        {
+            cerr << "ERROR: Unsupported cellDim in MBReader::loadSourceBdry()\nExiting" << endl;
+            exit(1);
+        }
+
+        // Search through faces and only keep those with one parent cell
+        for (auto it = faces.begin(), end = faces.end(); it != end; ++it)
         {
             neighbors.clear();
             mb->get_adjacencies( &(*it) , 1, 3, false, neighbors);
             if (neighbors.size() == 1)
             {
-                sourceBdryHexs.push_back(*it);
+                sourceBdryFaces.push_back(*it);
             }
             else if (neighbors.size() == 0)
             {
-                cerr << "ERROR: Found hex face with no parent cells" << endl;
+                cerr << "ERROR: Found face with no parent cells" << endl;
                 exit(1);
             }
         }
@@ -158,20 +179,19 @@ struct MBReader
             cerr << "Warning: Attempted to compute sourceVertexBounds but no vertices found." << endl;
         }
 
-        const int dim = 3;
-        mins = VectorX<V>::Zero(dim);
-        maxs = VectorX<V>::Zero(dim);
-        for (int j = 0; j < dim; j++)
+        mins = VectorX<V>::Zero(geomDim);
+        maxs = VectorX<V>::Zero(geomDim);
+        for (int j = 0; j < geomDim; j++)
         {
             mins(j) = sourceCoords[j];
             maxs(j) = sourceCoords[j];
         }
         for (int i = 0; i < sourceVertices.size(); i++)
         {
-            for (int j = 0; j < dim; j++)
+            for (int j = 0; j < geomDim; j++)
             {
-                if (sourceCoords[dim*i+j] < mins(j)) mins(j) = sourceCoords[dim*i+j];
-                if (sourceCoords[dim*i+j] > maxs(j)) maxs(j) = sourceCoords[dim*i+j];
+                if (sourceCoords[geomDim*i+j] < mins(j)) mins(j) = sourceCoords[geomDim*i+j];
+                if (sourceCoords[geomDim*i+j] > maxs(j)) maxs(j) = sourceCoords[geomDim*i+j];
             }
         }
     }
@@ -183,20 +203,19 @@ struct MBReader
             cerr << "Warning: Attempted to compute targetVertexBounds but no vertices found." << endl;
         }
 
-        const int dim = 3;
-        mins = VectorX<V>::Zero(dim);
-        maxs = VectorX<V>::Zero(dim);
-        for (int j = 0; j < dim; j++)
+        mins = VectorX<V>::Zero(geomDim);
+        maxs = VectorX<V>::Zero(geomDim);
+        for (int j = 0; j < geomDim; j++)
         {
             mins(j) = targetCoords[j];
             maxs(j) = targetCoords[j];
         }
         for (int i = 0; i < targetVertices.size(); i++)
         {
-            for (int j = 0; j < dim; j++)
+            for (int j = 0; j < geomDim; j++)
             {
-                if (targetCoords[dim*i+j] < mins(j)) mins(j) = targetCoords[dim*i+j];
-                if (targetCoords[dim*i+j] > maxs(j)) maxs(j) = targetCoords[dim*i+j];
+                if (targetCoords[geomDim*i+j] < mins(j)) mins(j) = targetCoords[geomDim*i+j];
+                if (targetCoords[geomDim*i+j] > maxs(j)) maxs(j) = targetCoords[geomDim*i+j];
             }
         }
     }
@@ -221,6 +240,8 @@ struct CBlock : public BlockBase<T>
     using Base::errs;
     using Base::mfa;
 
+    const int geomDim;
+
     mfa::PointSet<T>*   mpas_input;
     mfa::PointSet<T>*   mpas_approx;
     mfa::PointSet<T>*   mpas_error;
@@ -238,17 +259,18 @@ struct CBlock : public BlockBase<T>
     // zero-initialize pointers during default construction
     CBlock() : 
         Base(),
+        geomDim(3),
         mpas_input(nullptr),
         mpas_approx(nullptr),
         mpas_error(nullptr),
         roms_input(nullptr)
     { 
-        sourceMins = VectorX<T>::Zero(dom_dim);
-        sourceMaxs = VectorX<T>::Zero(dom_dim);
-        targetMins = VectorX<T>::Zero(dom_dim);
-        targetMaxs = VectorX<T>::Zero(dom_dim);
-        bboxMins = VectorX<T>::Zero(dom_dim);
-        bboxMaxs = VectorX<T>::Zero(dom_dim);
+        sourceMins = VectorX<T>::Zero(geomDim);
+        sourceMaxs = VectorX<T>::Zero(geomDim);
+        targetMins = VectorX<T>::Zero(geomDim);
+        targetMaxs = VectorX<T>::Zero(geomDim);
+        bboxMins = VectorX<T>::Zero(geomDim);
+        bboxMaxs = VectorX<T>::Zero(geomDim);
     }
 
     virtual ~CBlock()
@@ -286,16 +308,16 @@ struct CBlock : public BlockBase<T>
     static
         void load(void* b_, diy::BinaryBuffer& bb)          { mfa::load<CBlock, T>(b_, bb); }
 
-    void initMOAB(MPI_Comm local)
+    void initMOAB(MPI_Comm local, int dim)
     {
-        mbr = new MBReader<T>(local);
+        mbr = new MBReader<T>(local, dim);
     }
 
     void computeBbox()
     {
-        bboxMins = VectorX<T>::Zero(dom_dim);
-        bboxMaxs = VectorX<T>::Zero(dom_dim);
-        for (int i = 0; i < dom_dim; i++)
+        bboxMins = VectorX<T>::Zero(geomDim);
+        bboxMaxs = VectorX<T>::Zero(geomDim);
+        for (int i = 0; i < geomDim; i++)
         {
             bboxMins(i) = std::min(sourceMins(i), targetMins(i));
             bboxMaxs(i) = std::max(sourceMaxs(i), targetMaxs(i));
@@ -304,68 +326,92 @@ struct CBlock : public BlockBase<T>
         mfa::print_bbox(bboxMins, bboxMaxs, "Full Bounding Box");
     }
 
+    template<typename V>
+    void add_source_data(
+        const   diy::Master::ProxyWithLink& cp,
+                string filename,
+                string varName,
+                int    varIdx,
+                bool   addBdryData = true)
+    {
+        Tag dataTag;
+        mbr->mb->tag_get_handle(varName.c_str(), dataTag);
+        vector<T> dataVec(mbr->sourceElements.size());
+        mbr->mb->tag_get_data(dataTag, mbr->sourceElements, dataVec.data());
+
+        for (int i = 0; i < dataVec.size(); i++)
+        {
+            mpas_input->domain(i, geomDim + varIdx) = dataVec[i];
+        }
+
+        // Optionally add data for each boundary face
+        if (addBdryData)
+        {
+            vector<EntityHandle> parent;
+            int offset = mbr->sourceElements.size();
+            for (int j = 0; j < mbr->sourceBdryFaces.size(); j++)
+            {
+                // Get tag data associated to parent cell
+                parent.clear();
+                mbr->mb->get_adjacencies(&mbr->sourceBdryFaces[j], 1, 3, false, parent);
+                if (parent.size() != 1)
+                {
+                    cerr << "ERROR: Expected a single parent element" << endl;
+                    exit(1);
+                }
+
+                int parentIdx = mbr->sourceEltIdxMap[parent[0]];
+                mpas_input->domain(offset + j, geomDim + varIdx) = dataVec[parentIdx];
+            }
+        }
+    }
+
     template <typename V>
-    void read_mpas_data_3d_mb(
+    void read_mpas_data(
             const   diy::Master::ProxyWithLink& cp,
                     string filename,
                     mfa::MFAInfo& mfa_info,
-                    const VectorX<T>& roms_mins = VectorX<T>(),
-                    const VectorX<T>& roms_maxs = VectorX<T>())
+                    bool addBdryData = true)
     {
         mbr->loadSourceMesh(filename);
         mbr->loadSourceBdry();
         mbr->sourceVertexBounds(sourceMins, sourceMaxs);
 
-        Tag temperatureTag;
-        mbr->mb->tag_get_handle("Temperature3d", temperatureTag);
-        vector<T> temperature(mbr->sourceElements.size());
-        mbr->mb->tag_get_data(temperatureTag, mbr->sourceElements, temperature.data());
-
-        Tag salinityTag;
-        mbr->mb->tag_get_handle("Salinity3d", salinityTag);
-        vector<T> salinity(mbr->sourceElements.size());
-        mbr->mb->tag_get_data(salinityTag, mbr->sourceElements, salinity.data());
-
         // Set up MFA PointSet
         VectorXi model_dims(3);
-        model_dims << 3, 1, 1;          // geometry, bathymetry, salinity, temperature
-        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr->sourceElements.size() + mbr->sourceBdryHexs.size());
+        model_dims << geomDim, 1, 1;          // geometry, bathymetry, salinity, temperature
+        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr->sourceElements.size() + mbr->sourceBdryFaces.size());
 
+        // Add cell centroid coordinates to PointSet
         int i = 0;
-        V centroid[3];
+        vector<V> centroid(geomDim);
         for (auto it = mbr->sourceElements.begin(), end = mbr->sourceElements.end(); it != end; ++it, ++i)
         {
-            mbr->mb->get_coords(&(*it), 1, centroid);
-            mpas_input->domain(i, 0) = centroid[0];
-            mpas_input->domain(i, 1) = centroid[1];
-            mpas_input->domain(i, 2) = centroid[2];
-            mpas_input->domain(i, 3) = salinity[i];
-            mpas_input->domain(i, 4) = temperature[i];            
+            mbr->mb->get_coords(&(*it), 1, centroid.data());
+            for (int k = 0; k < geomDim; k++)
+            {
+                mpas_input->domain(i, k) = centroid[k];
+            }          
         }
 
         // Add boundary data
-        vector<EntityHandle> parent;
-        int offset = mbr->sourceElements.size();
-        for (int j = 0; j < mbr->sourceBdryHexs.size(); j++)
+        if (addBdryData)
         {
-            mbr->mb->get_coords(&mbr->sourceBdryHexs[j], 1, centroid);
-            mpas_input->domain(offset + j, 0) = centroid[0];
-            mpas_input->domain(offset + j, 1) = centroid[1];
-            mpas_input->domain(offset + j, 2) = centroid[2];
-
-            // Get tag data associated to parent cell
-            parent.clear();
-            mbr->mb->get_adjacencies(&mbr->sourceBdryHexs[j], 1, 3, false, parent);
-            if (parent.size() != 1)
+            vector<EntityHandle> parent;
+            int offset = mbr->sourceElements.size();
+            for (int j = 0; j < mbr->sourceBdryFaces.size(); j++)
             {
-                cerr << "ERROR: Expected a single parent element" << endl;
-                exit(1);
+                mbr->mb->get_coords(&mbr->sourceBdryFaces[j], 1, centroid.data());
+                for (int k = 0; k < geomDim; k++)
+                {
+                    mpas_input->domain(offset + j, k) = centroid[k];
+                }
             }
-
-            int parentIdx = mbr->sourceEltIdxMap[parent[0]];
-            mpas_input->domain(offset + j, 3) = salinity[parentIdx];
-            mpas_input->domain(offset + j, 4) = temperature[parentIdx]; 
         }
+
+        // Add data values to PointSet
+        add_source_data<V>(cp, filename, "Salinity3d", 0, addBdryData);
+        add_source_data<V>(cp, filename, "Temperature3d", 1, addBdryData);
 
         // Compute total bounding box around mpas and roms
         computeBbox();
@@ -388,43 +434,42 @@ struct CBlock : public BlockBase<T>
     }
 
     template <typename V>
-    void read_roms_data_3d_mb(
+    void read_roms_data(
             const   diy::Master::ProxyWithLink& cp,
-                    string filename)
+                    string  filename)
     {
         const bool decodeAtVertices = false;
 
         VectorXi model_dims(1);
-        model_dims(0) = 3;      // geometric coordinates only
+        model_dims(0) = geomDim;      // geometric coordinates only
 
         mbr->loadTargetMesh(filename);
         mbr->targetVertexBounds(targetMins, targetMaxs);
 
         int npts = 0;
-        V coord[3];
+        vector<V> coord(geomDim);
         int i = 0;
+        moab::Range::iterator it, end;
         if (decodeAtVertices)
         {
             npts = mbr->targetVertices.size();
-            roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
-            for (auto it = mbr->targetVertices.begin(), end = mbr->targetVertices.end(); it != end; ++it, ++i)
-            {
-                mbr->mb->get_coords(&(*it), 1, coord);
-                roms_input->domain(i, 0) = coord[0];
-                roms_input->domain(i, 1) = coord[1];
-                roms_input->domain(i, 2) = coord[2];
-            }
+            it = mbr->targetVertices.begin();
+            end = mbr->targetVertices.end();
         }
         else
         {
             npts = mbr->targetElements.size();
-            roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
-            for (auto it = mbr->targetElements.begin(), end = mbr->targetElements.end(); it != end; ++it, ++i)
+            it = mbr->targetElements.begin();
+            end = mbr->targetElements.end();
+        }
+
+        roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
+        for ( ; it != end; ++it, ++i)
+        {
+            mbr->mb->get_coords(&(*it), 1, coord.data());
+            for (int j = 0; j < geomDim; j++)
             {
-                mbr->mb->get_coords(&(*it), 1, coord);
-                roms_input->domain(i, 0) = coord[0];
-                roms_input->domain(i, 1) = coord[1];
-                roms_input->domain(i, 2) = coord[2];
+                roms_input->domain(i, j) = coord[j];
             }
         }
 

@@ -106,7 +106,7 @@ int main(int argc, char** argv)
     fmt::print("threading: {}\n", thread_type);
     fmt::print("MPAS file name: {}\n", mpasfile);
     fmt::print("ROMS file name: {}\n", romsfile);
-fmt::print("1\n");
+
     // initialize DIY
     diy::FileStorage          storage("./DIY.XXXXXX"); // used for blocks to be moved out of core
     diy::Master               master(world,
@@ -118,7 +118,7 @@ fmt::print("1\n");
                                      &B::save,
                                      &B::load);
     diy::ContiguousAssigner   assigner(world.size(), tot_blocks);
-fmt::print("2\n");
+
     // set global domain bounds and decompose
     Bounds<real_t> domain(dom_dim);
     domain.min = vector<real_t>(dom_dim, 0);
@@ -128,30 +128,27 @@ fmt::print("2\n");
                          assigner,
                          [&](int gid, const Bounds<real_t>& core, const Bounds<real_t>& bounds, const Bounds<real_t>& domain, const RCLink<real_t>& link)
                          { B::add(gid, core, bounds, domain, link, master, dom_dim, pt_dim, 0.0); });
-fmt::print("3\n");
+
     // Set up problem dimensionality. Should look like {3, 1, 1, ..., 1}
     //   That is, the geometry is 3-dimensional and every variable is a scalar
     const int geom_dim = 3;  // Assume points are always 3D
     vector<int> model_dims(pt_dim - geom_dim + 1, 1);
     model_dims[0] = geom_dim;
-fmt::print("4\n");
+
     // Set up MFA
     mfa::MFAInfo mfa_info(dom_dim, verbose, model_dims, geom_degree, geom_nctrl, vars_degree, vars_nctrl);
     mfa_info.weighted         = 0;
     mfa_info.regularization   = regularization;
     mfa_info.reg1and2         = reg1and2;
-fmt::print("5\n");
+
     // Perform the remapping
     double encode_time = MPI_Wtime();
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
     {
-        b->initMOAB(local);
+        b->initMOAB(local, dom_dim);
 
-        b->read_roms_data_3d_mb<double>(cp, romsfile); 
-
-        VectorX<real_t> mins = b->roms_input->mins();
-        VectorX<real_t> maxs = b->roms_input->maxs();
-        b->read_mpas_data_3d_mb<double>(cp, mpasfile, mfa_info, mins, maxs);
+        b->read_roms_data<double>(cp, romsfile); 
+        b->read_mpas_data<double>(cp, mpasfile, mfa_info);
 
         b->remap(cp, mfa_info, true);
     });
