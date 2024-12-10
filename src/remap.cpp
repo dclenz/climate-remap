@@ -145,10 +145,12 @@ int main(int argc, char** argv)
     double encode_time = MPI_Wtime();
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
     {
+        b->verbose = verbose;
         b->initMOAB(local, dom_dim);
 
-        b->read_roms_data<double>(cp, romsfile); 
-        b->read_mpas_data<double>(cp, mpasfile, mfa_info);
+        b->readTargetData<double>(cp, romsfile); 
+        b->readSourceData<double>(cp, mpasfile);
+        b->setup_MFA(cp, mfa_info);
 
         b->remap(cp, mfa_info, true);
     });

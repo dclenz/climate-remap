@@ -241,6 +241,7 @@ struct CBlock : public BlockBase<T>
     using Base::mfa;
 
     const int geomDim;
+    int verbose;
 
     mfa::PointSet<T>*   mpas_input;
     mfa::PointSet<T>*   mpas_approx;
@@ -260,6 +261,7 @@ struct CBlock : public BlockBase<T>
     CBlock() : 
         Base(),
         geomDim(3),
+        verbose(0),
         mpas_input(nullptr),
         mpas_approx(nullptr),
         mpas_error(nullptr),
@@ -323,11 +325,11 @@ struct CBlock : public BlockBase<T>
             bboxMaxs(i) = std::max(sourceMaxs(i), targetMaxs(i));
         }
 
-        mfa::print_bbox(bboxMins, bboxMaxs, "Full Bounding Box");
+        if (verbose >= 1) mfa::print_bbox(bboxMins, bboxMaxs, "Full Bounding");
     }
 
     template<typename V>
-    void add_source_data(
+    void addSourceVariable(
         const   diy::Master::ProxyWithLink& cp,
                 string filename,
                 string varName,
@@ -367,19 +369,27 @@ struct CBlock : public BlockBase<T>
     }
 
     template <typename V>
-    void read_mpas_data(
+    void readSourceData(
             const   diy::Master::ProxyWithLink& cp,
                     string filename,
-                    mfa::MFAInfo& mfa_info,
                     bool addBdryData = true)
     {
+        if (!roms_input)
+        {
+            cerr << "ERROR: Cannot read source data before target data when remapping." << endl;
+            cerr << "       Source data model needs to know the bounding box of the target data ahead of time." << endl;
+            cerr << "       Exiting." << endl;
+            exit(1);
+        }
+
         mbr->loadSourceMesh(filename);
         mbr->loadSourceBdry();
         mbr->sourceVertexBounds(sourceMins, sourceMaxs);
+        if (verbose >= 1) mfa::print_bbox(sourceMins, sourceMaxs, "Source Bounding");
 
         // Set up MFA PointSet
         VectorXi model_dims(3);
-        model_dims << geomDim, 1, 1;          // geometry, bathymetry, salinity, temperature
+        model_dims << geomDim, 1, 1;          // geometry, salinity, temperature
         mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr->sourceElements.size() + mbr->sourceBdryFaces.size());
 
         // Add cell centroid coordinates to PointSet
@@ -410,31 +420,18 @@ struct CBlock : public BlockBase<T>
         }
 
         // Add data values to PointSet
-        add_source_data<V>(cp, filename, "Salinity3d", 0, addBdryData);
-        add_source_data<V>(cp, filename, "Temperature3d", 1, addBdryData);
+        addSourceVariable<V>(cp, filename, "Salinity3d", 0, addBdryData);
+        addSourceVariable<V>(cp, filename, "Temperature3d", 1, addBdryData);
 
         // Compute total bounding box around mpas and roms
         computeBbox();
 
         // Set parametrization
         mpas_input->set_domain_params(bboxMins, bboxMaxs);
-
-        // Set up MFA from user-specified options
-        this->setup_MFA(cp, mfa_info);
-
-        // Find block bounds for coordinates and values
-        bounds_mins = mpas_input->domain.colwise().minCoeff();
-        bounds_maxs = mpas_input->domain.colwise().maxCoeff();
-        core_mins   = bounds_mins.head(dom_dim);
-        core_maxs   = bounds_maxs.head(dom_dim);
-
-        // debug
-        mfa::print_bbox(bboxMins, bboxMaxs, "MPAS Custom");
-        mfa::print_bbox(bounds_mins, bounds_maxs, "MPAS Bounds");
     }
 
     template <typename V>
-    void read_roms_data(
+    void readTargetData(
             const   diy::Master::ProxyWithLink& cp,
                     string  filename)
     {
@@ -445,6 +442,7 @@ struct CBlock : public BlockBase<T>
 
         mbr->loadTargetMesh(filename);
         mbr->targetVertexBounds(targetMins, targetMaxs);
+        if (verbose >= 1) mfa::print_bbox(targetMins, targetMaxs, "Target Bounding");
 
         int npts = 0;
         vector<V> coord(geomDim);
@@ -475,16 +473,6 @@ struct CBlock : public BlockBase<T>
 
         // Compute input parametrization
         roms_input->set_domain_params();
-
-        // Find block bounds for coordinates and values
-        bounds_mins = roms_input->domain.colwise().minCoeff();
-        bounds_maxs = roms_input->domain.colwise().maxCoeff();
-        core_mins   = bounds_mins.head(dom_dim);
-        core_maxs   = bounds_maxs.head(dom_dim);
-
-        // debug
-        mfa::print_bbox(core_mins, core_maxs, "ROMS Core");
-        mfa::print_bbox(bounds_mins, bounds_maxs, "ROMS Bounds");
     }
 
     void convertParams( const mfa::PointSet<T>*  source,
