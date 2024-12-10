@@ -54,6 +54,7 @@ int main(int argc, char** argv)
     vector<int> vars_nctrl      = {11};     // initial # control points for all science variables (default same for all dims)
     string      romsfile        = "";       // data file produced by ROMS (remap target)
     string      mpasfile        = "";       // data file produced by MPAS (remap source)
+    vector<string> varNames     = {""};
     real_t      regularization  = 0;        // smoothing parameter for models with non-uniform input density (0 == no smoothing)
     int         reg1and2        = 0;        // flag for regularizer: 0 = regularize only 2nd derivs. 1 = regularize 1st and 2nd
     int         adaptive        = 0;        // do analytical encode (0/1)
@@ -73,6 +74,7 @@ int main(int argc, char** argv)
     ops >> opts::Option('v', "vars_nctrl",  vars_nctrl, " number of control points in each dimension of all science variables");
     ops >> opts::Option('b', "regularization", regularization, "smoothing parameter for models with non-uniform input density");
     ops >> opts::Option('k', "reg1and2",    reg1and2,   " regularize both 1st and 2nd derivatives (if =1) or just 2nd (if =0)");
+    ops >> opts::Option('r', "varNames",    varNames,  " vector of variable names to remap");
     ops >> opts::Option('z' ,"romsfile",    romsfile,  " file path for roms data file");
     ops >> opts::Option('z', "mpasfile",    mpasfile,  " file path for mpas data file");
     ops >> opts::Option('x', "verbose",     verbose,    " MFA verbosity (0 = no output, 1 = limited output, 2 = high output)");
@@ -106,6 +108,7 @@ int main(int argc, char** argv)
     fmt::print("threading: {}\n", thread_type);
     fmt::print("MPAS file name: {}\n", mpasfile);
     fmt::print("ROMS file name: {}\n", romsfile);
+    fmt::print("Variables to remap: {}\n", mfa::print_vec(varNames));
 
     // initialize DIY
     diy::FileStorage          storage("./DIY.XXXXXX"); // used for blocks to be moved out of core
@@ -145,14 +148,13 @@ int main(int argc, char** argv)
     double encode_time = MPI_Wtime();
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
     {
+        // Customize remapper block
         b->verbose = verbose;
-        b->initMOAB(local, dom_dim);
+        b->dumpMatrices = true;
+        b->addBdryData = true;
 
-        b->readTargetData<double>(cp, romsfile); 
-        b->readSourceData<double>(cp, mpasfile);
-        b->setup_MFA(cp, mfa_info);
-
-        b->remap(cp, mfa_info, true);
+        // Do the remapping
+        b->remap(cp, local, mpasfile, romsfile, varNames, mfa_info);
     });
     encode_time = MPI_Wtime() - encode_time;
 

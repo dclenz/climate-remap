@@ -242,6 +242,10 @@ struct CBlock : public BlockBase<T>
 
     const int geomDim;
     int verbose;
+    vector<string> varNames;
+
+    bool dumpMatrices = false;
+    bool addBdryData = true;
 
     mfa::PointSet<T>*   mpas_input;
     mfa::PointSet<T>*   mpas_approx;
@@ -333,8 +337,7 @@ struct CBlock : public BlockBase<T>
         const   diy::Master::ProxyWithLink& cp,
                 string filename,
                 string varName,
-                int    varIdx,
-                bool   addBdryData = true)
+                int    varIdx)
     {
         Tag dataTag;
         mbr->mb->tag_get_handle(varName.c_str(), dataTag);
@@ -371,8 +374,7 @@ struct CBlock : public BlockBase<T>
     template <typename V>
     void readSourceData(
             const   diy::Master::ProxyWithLink& cp,
-                    string filename,
-                    bool addBdryData = true)
+                    string filename)
     {
         if (!roms_input)
         {
@@ -420,8 +422,10 @@ struct CBlock : public BlockBase<T>
         }
 
         // Add data values to PointSet
-        addSourceVariable<V>(cp, filename, "Salinity3d", 0, addBdryData);
-        addSourceVariable<V>(cp, filename, "Temperature3d", 1, addBdryData);
+        for (int l = 0; l < varNames.size(); l++)
+        {
+            addSourceVariable<V>(cp, filename, varNames[l], l);
+        }
 
         // Compute total bounding box around mpas and roms
         computeBbox();
@@ -501,10 +505,9 @@ struct CBlock : public BlockBase<T>
         convert = new mfa::PointSet<T>(new_param, source->model_dims());
     }
 
-    void remap(
+    void computeRemap(
         const diy::Master::ProxyWithLink&   cp,
-        mfa::MFAInfo&   info,
-        bool            dumpMatrices = false)
+        mfa::MFAInfo&   info)
     {
         // All depth levels
         vector<T> depth1 = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170.197, 180.761, 191.821, 203.499, 215.923, 229.233, 243.584, 259.156, 276.152, 294.815, 315.424, 338.312, 363.875, 392.58, 424.989, 461.767, 503.707, 551.749, 606.997, 670.729, 744.398, 829.607, 928.043, 1041.37, 1171.04, 1318.09, 1482.9, 1664.99, 1863.01, 2074.87, 2298.04, 2529.9, 2768.1, 3010.67, 3256.14};
@@ -544,19 +547,19 @@ struct CBlock : public BlockBase<T>
         // Evaluate MFA
         mfa->Decode(*mpas_approx, false);
 
-        Tag sal_remap_tag;
-        Tag temp_remap_tag;
-        mbr->mb->tag_get_handle("salinity_remap", 1, MB_TYPE_DOUBLE, sal_remap_tag, MB_TAG_DENSE | MB_TAG_CREAT);
-        mbr->mb->tag_get_handle("temperature_remap", 1, MB_TYPE_DOUBLE, temp_remap_tag, MB_TAG_DENSE | MB_TAG_CREAT);
-        vector<T> sal_remap_data(mpas_approx->npts);
-        vector<T> temp_remap_data(mpas_approx->npts);
-        for (int i = 0; i < mpas_approx->npts; i++)
+        // Add remapped values as new tags
+        for (int l = 0; l < varNames.size(); l++)
         {
-            sal_remap_data[i] = mpas_approx->domain(i, 3);
-            temp_remap_data[i] = mpas_approx->domain(i, 4);
+            Tag remapTag;
+            string remapTagName = varNames[l] + "_remap";
+            vector<T> remapData(mpas_approx->npts);
+            mbr->mb->tag_get_handle(remapTagName.c_str(), 1, MB_TYPE_DOUBLE, remapTag, MB_TAG_DENSE | MB_TAG_CREAT);
+            for (int i = 0; i < mpas_approx->npts; i++)
+            {
+                remapData[i] = mpas_approx->domain(i, geomDim + l);
+            }
+            mbr->mb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
         }
-        mbr->mb->tag_set_data(sal_remap_tag, mbr->targetElements, sal_remap_data.data());
-        mbr->mb->tag_set_data(temp_remap_tag, mbr->targetElements, temp_remap_data.data());
 
         cerr << "Writing remapped data to vtk..." << flush;
         mbr->mb->write_mesh("remap_out.vtk", &mbr->targetFileSet, 1);
@@ -567,6 +570,23 @@ struct CBlock : public BlockBase<T>
         mpas_input = nullptr;
         approx = mpas_approx;
         mpas_approx = nullptr;
+    }
+
+    void remap(
+        const diy::Master::ProxyWithLink&   cp,
+        MPI_Comm        comm,
+        string          sourceFilename,
+        string          targetFilename,
+        vector<string>  varNames,
+        mfa::MFAInfo&   info)
+    {
+        this->varNames = varNames;
+
+        initMOAB(comm, info.dom_dim);
+        readTargetData<double>(cp, targetFilename);
+        readSourceData<double>(cp, sourceFilename);
+        this->setup_MFA(cp, info);
+        computeRemap(cp, info);
     }
 
 
