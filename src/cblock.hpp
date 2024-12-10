@@ -479,8 +479,6 @@ struct CBlock : public BlockBase<T>
                         const mfa::PointSet<T>*  target,
                               mfa::PointSet<T>*& convert)
     {
-        VectorX<T> tMins = target->mins();
-        VectorX<T> tMaxs = target->maxs();
         VectorX<T> sMins = source->mins();
         VectorX<T> sMaxs = source->maxs();
         VectorX<T> sDiff = sMaxs - sMins;
@@ -535,22 +533,6 @@ struct CBlock : public BlockBase<T>
 
         // Compute parametrization of roms points w.r.t mpas domain
         convertParams(mpas_input, roms_input, mpas_approx);
-        // VectorX<T> roms_mins = roms_input->mins();
-        // VectorX<T> roms_maxs = roms_input->maxs();
-        // VectorX<T> mpas_mins = mpas_input->mins();
-        // VectorX<T> mpas_maxs = mpas_input->maxs();
-        // VectorX<T> mpas_diff = mpas_maxs - mpas_mins;
-
-        // // Compute parametrization of ROMS points in terms of MPAS domain
-        // shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
-        // new_param->param_list.resize(roms_input->npts, dom_dim);
-        // for (size_t k = 0; k < dom_dim; k++)
-        // {
-        //     new_param->param_list.col(k) = (roms_input->domain.col(k).array() - mpas_mins(k)) * (1/mpas_diff(k));
-        // }
-
-        // // Set parametrization object for the PointSet we will decode into
-        // mpas_approx = new mfa::PointSet<T>(new_param, mpas_input->model_dims());
 
         // Write out collocation matrices for encoding and decoding
         if (dumpMatrices)
@@ -576,7 +558,9 @@ struct CBlock : public BlockBase<T>
         mbr->mb->tag_set_data(sal_remap_tag, mbr->targetElements, sal_remap_data.data());
         mbr->mb->tag_set_data(temp_remap_tag, mbr->targetElements, temp_remap_data.data());
 
+        cerr << "Writing remapped data to vtk..." << flush;
         mbr->mb->write_mesh("remap_out.vtk", &mbr->targetFileSet, 1);
+        cerr << "done." << endl;
 
         // Move pointers around for visualizing in Paraview
         input = mpas_input;
