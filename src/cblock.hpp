@@ -254,6 +254,10 @@ struct CBlock : public BlockBase<T>
 
     MBReader<T>* mbr;
 
+    mfa::Bbox<T> sourceBox;
+    mfa::Bbox<T> targetBox;
+    mfa::Bbox<T> bbox;
+
     VectorX<T> sourceMins;
     VectorX<T> sourceMaxs;
     VectorX<T> targetMins;
@@ -321,15 +325,31 @@ struct CBlock : public BlockBase<T>
 
     void computeBbox()
     {
-        bboxMins = VectorX<T>::Zero(geomDim);
-        bboxMaxs = VectorX<T>::Zero(geomDim);
-        for (int i = 0; i < geomDim; i++)
+        // bboxMins = VectorX<T>::Zero(geomDim);
+        // bboxMaxs = VectorX<T>::Zero(geomDim);
+        // for (int i = 0; i < geomDim; i++)
+        // {
+        //     bboxMins(i) = std::min(sourceMins(i), targetMins(i));
+        //     bboxMaxs(i) = std::max(sourceMaxs(i), targetMaxs(i));
+        // }
+
+        // Compute superset of targetBox and sourceBox
+        bbox = targetBox.merge(sourceBox); 
+        
+        // Ensure that the full bounding box is a superset of both domains
+        // n.b. this debug step could be slow as it loops completely through both data sets
+        if (!bbox.doesContain(*mpas_input, 2))
         {
-            bboxMins(i) = std::min(sourceMins(i), targetMins(i));
-            bboxMaxs(i) = std::max(sourceMaxs(i), targetMaxs(i));
+            fmt::print("ERROR: Bounding box does not contain all of source data\n");
+            exit(1);
+        }
+        if (!bbox.doesContain(*roms_input, 2))
+        {
+            fmt::print("ERROR: Bounding box does not contain all of target data\n");
+            exit(1);
         }
 
-        if (verbose >= 1) mfa::print_bbox(bboxMins, bboxMaxs, "Full Bounding");
+        if (verbose >= 1) bbox.print();
     }
 
     template<typename V>
@@ -390,9 +410,11 @@ struct CBlock : public BlockBase<T>
         if (verbose >= 1) mfa::print_bbox(sourceMins, sourceMaxs, "Source Bounding");
 
         // Set up MFA PointSet
-        VectorXi model_dims(3);
-        model_dims << geomDim, 1, 1;          // geometry, salinity, temperature
-        mpas_input = new mfa::PointSet<T>(dom_dim, model_dims, mbr->sourceElements.size() + mbr->sourceBdryFaces.size());
+        VectorXi modelDims = VectorXi::Ones(varNames.size() + 1); // one model per remapped variable, plus geometry
+        modelDims(0) = geomDim;
+
+        // model_dims << geomDim, 1, 1;          // geometry, salinity, temperature
+        mpas_input = new mfa::PointSet<T>(dom_dim, modelDims, mbr->sourceElements.size() + mbr->sourceBdryFaces.size());
 
         // Add cell centroid coordinates to PointSet
         int i = 0;
@@ -427,11 +449,24 @@ struct CBlock : public BlockBase<T>
             addSourceVariable<V>(cp, filename, varNames[l], l);
         }
 
-        // Compute total bounding box around mpas and roms
-        computeBbox();
+        VectorX<T> n, a, b;
+        n = mfa::estimateSurfaceNormal<T>(mpas_input->domain.leftCols(3));
+        auto vecs = mfa::getPlaneVectors<T>(n);
+        a = vecs.first;
+        b = vecs.second;
 
-        // Set parametrization
-        mpas_input->set_domain_params(bboxMins, bboxMaxs);
+        if (verbose >= 2)
+        {
+            fmt::print("Source Orientation:\n");
+            fmt::print("  a: {}\n", mfa::print_vec(a));
+            fmt::print("  b: {}\n", mfa::print_vec(b));
+            fmt::print("  n: {}\n", mfa::print_vec(n));
+        }
+
+        // NOTE: here we are forcing the sourceoBox to be oriented
+        //       the same way as the targetBox
+        // TODO: Add a warning if the two orientations differ "too much"
+        sourceBox = mfa::Bbox<T>(targetBox.basis, *mpas_input);
     }
 
     template <typename V>
@@ -441,8 +476,9 @@ struct CBlock : public BlockBase<T>
     {
         const bool decodeAtVertices = false;
 
-        VectorXi model_dims(1);
-        model_dims(0) = geomDim;      // geometric coordinates only
+        // Dimensionality of each variable (assumed to be scalar)
+        VectorXi modelDims = VectorXi::Ones(varNames.size() + 1); // one model per remapped variable, plus geometry
+        modelDims(0) = geomDim;
 
         mbr->loadTargetMesh(filename);
         mbr->targetVertexBounds(targetMins, targetMaxs);
@@ -465,7 +501,7 @@ struct CBlock : public BlockBase<T>
             end = mbr->targetElements.end();
         }
 
-        roms_input = new mfa::PointSet<T>(dom_dim, model_dims, npts);
+        roms_input = new mfa::PointSet<T>(dom_dim, modelDims, npts);
         for ( ; it != end; ++it, ++i)
         {
             mbr->mb->get_coords(&(*it), 1, coord.data());
@@ -475,8 +511,28 @@ struct CBlock : public BlockBase<T>
             }
         }
 
-        // Compute input parametrization
-        roms_input->set_domain_params();
+        VectorX<T> n, a, b;
+        n = mfa::estimateSurfaceNormal<T>(roms_input->domain.leftCols(3));
+        auto vecs = mfa::getPlaneVectors<T>(n);
+        a = vecs.first;
+        b = vecs.second;
+
+        if (verbose >= 2)
+        {
+            fmt::print("Target Orientation:\n");
+            fmt::print("  a: {}\n", mfa::print_vec(a));
+            fmt::print("  b: {}\n", mfa::print_vec(b));
+            fmt::print("  n: {}\n", mfa::print_vec(n));
+        }
+
+        targetBox = mfa::Bbox<T>({a, b, n}, *roms_input);
+    }
+
+    void setParameterizations()
+    {
+        computeBbox();
+        roms_input->set_domain_params(bbox);
+        mpas_input->set_domain_params(bbox);
     }
 
     void convertParams( const mfa::PointSet<T>*  source,
@@ -509,6 +565,59 @@ struct CBlock : public BlockBase<T>
         const diy::Master::ProxyWithLink&   cp,
         mfa::MFAInfo&   info)
     {
+        // In 3D, the z-knots are set specifically to the depth levels in the MPAS mesh
+        if (dom_dim == 3)
+        {
+            set3DKnots();
+        }
+
+        // Compute parametrization of roms points w.r.t mpas domain
+        // convertParams(mpas_input, roms_input, mpas_approx);
+        mpas_approx = new mfa::PointSet<T>(roms_input->params, roms_input->model_dims());
+
+        // Write out collocation matrices for encoding and decoding
+        if (dumpMatrices)
+        {
+            mfa->dumpCollocationMatrixEncode(0, mpas_input);
+            mfa->dumpCollocationMatrixDecode(0, mpas_approx);
+        }
+
+        // Create MFA model from source data
+        mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted);
+
+        // Evaluate MFA at target mesh locations
+        mfa->Decode(*mpas_approx, false);
+
+        // Add remapped values as new tags
+        for (int l = 0; l < varNames.size(); l++)
+        {
+            Tag remapTag;
+            string remapTagName = varNames[l] + "_remap";
+            vector<T> remapData(mpas_approx->npts);
+            mbr->mb->tag_get_handle(remapTagName.c_str(), 1, MB_TYPE_DOUBLE, remapTag, MB_TAG_DENSE | MB_TAG_CREAT);
+            for (int i = 0; i < mpas_approx->npts; i++)
+            {
+                remapData[i] = mpas_approx->domain(i, geomDim + l);
+            }
+            mbr->mb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
+        }
+
+        // Write .mb file as a VTK file for debugging
+        cerr << "Writing remapped data to vtk..." << flush;
+        mbr->mb->write_mesh("remap_out.vtk", &mbr->targetFileSet, 1);
+        mbr->mb->write_mesh("source_out.vtk", &mbr->sourceFileSet, 1);
+        cerr << "done." << endl;
+
+        // Move pointers around for visualizing in Paraview
+        input = mpas_input;
+        mpas_input = nullptr;
+        approx = mpas_approx;
+        mpas_approx = nullptr;
+    }
+
+    // Set custom knots based on depth levels in 3D
+    void set3DKnots()
+    {
         // All depth levels
         vector<T> depth1 = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170.197, 180.761, 191.821, 203.499, 215.923, 229.233, 243.584, 259.156, 276.152, 294.815, 315.424, 338.312, 363.875, 392.58, 424.989, 461.767, 503.707, 551.749, 606.997, 670.729, 744.398, 829.607, 928.043, 1041.37, 1171.04, 1318.09, 1482.9, 1664.99, 1863.01, 2074.87, 2298.04, 2529.9, 2768.1, 3010.67, 3256.14};
 
@@ -532,44 +641,6 @@ struct CBlock : public BlockBase<T>
         allknots[2] = mfa->pinKnots(zknots, mfa->var(0).p(0));
 
         mfa->setKnots(allknots);
-        mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted);
-
-        // Compute parametrization of roms points w.r.t mpas domain
-        convertParams(mpas_input, roms_input, mpas_approx);
-
-        // Write out collocation matrices for encoding and decoding
-        if (dumpMatrices)
-        {
-            mfa->dumpCollocationMatrixEncode(0, mpas_input);
-            mfa->dumpCollocationMatrixDecode(0, mpas_approx);
-        }
-
-        // Evaluate MFA
-        mfa->Decode(*mpas_approx, false);
-
-        // Add remapped values as new tags
-        for (int l = 0; l < varNames.size(); l++)
-        {
-            Tag remapTag;
-            string remapTagName = varNames[l] + "_remap";
-            vector<T> remapData(mpas_approx->npts);
-            mbr->mb->tag_get_handle(remapTagName.c_str(), 1, MB_TYPE_DOUBLE, remapTag, MB_TAG_DENSE | MB_TAG_CREAT);
-            for (int i = 0; i < mpas_approx->npts; i++)
-            {
-                remapData[i] = mpas_approx->domain(i, geomDim + l);
-            }
-            mbr->mb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
-        }
-
-        cerr << "Writing remapped data to vtk..." << flush;
-        mbr->mb->write_mesh("remap_out.vtk", &mbr->targetFileSet, 1);
-        cerr << "done." << endl;
-
-        // Move pointers around for visualizing in Paraview
-        input = mpas_input;
-        mpas_input = nullptr;
-        approx = mpas_approx;
-        mpas_approx = nullptr;
     }
 
     void remap(
@@ -582,9 +653,10 @@ struct CBlock : public BlockBase<T>
     {
         this->varNames = varNames;
 
-        initMOAB(comm, info.dom_dim);
+        initMOAB(comm, info.dom_dim);               // Start MOAB IO
         readTargetData<double>(cp, targetFilename);
         readSourceData<double>(cp, sourceFilename);
+        setParameterizations();
         this->setup_MFA(cp, info);
         computeRemap(cp, info);
     }
