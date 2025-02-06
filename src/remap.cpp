@@ -158,6 +158,12 @@ int main(int argc, char** argv)
     });
     encode_time = MPI_Wtime() - encode_time;
 
+    // Write source file and (remapped) target file to VTK
+    master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
+    {
+        b->writeVTK();
+    });
+
     // print results
     fmt::print("\n------- Final block results --------\n");
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)

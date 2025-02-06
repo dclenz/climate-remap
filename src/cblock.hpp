@@ -602,17 +602,20 @@ struct CBlock : public BlockBase<T>
             mbr->mb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
         }
 
-        // Write .mb file as a VTK file for debugging
-        cerr << "Writing remapped data to vtk..." << flush;
-        mbr->mb->write_mesh("remap_out.vtk", &mbr->targetFileSet, 1);
-        mbr->mb->write_mesh("source_out.vtk", &mbr->sourceFileSet, 1);
-        cerr << "done." << endl;
-
         // Move pointers around for visualizing in Paraview
         input = mpas_input;
         mpas_input = nullptr;
         approx = mpas_approx;
         mpas_approx = nullptr;
+    }
+
+    // Write .mb files as a VTK file for debugging
+    void writeVTK()
+    {
+        cerr << "Writing remapped data to vtk..." << flush;
+        mbr->mb->write_mesh("remap_out.vtk", &mbr->targetFileSet, 1);
+        mbr->mb->write_mesh("source_out.vtk", &mbr->sourceFileSet, 1);
+        cerr << "done." << endl;
     }
 
     // Set custom knots based on depth levels in 3D
