@@ -535,32 +535,6 @@ struct CBlock : public BlockBase<T>
         mpas_input->set_domain_params(bbox);
     }
 
-    void convertParams( const mfa::PointSet<T>*  source,
-                        const mfa::PointSet<T>*  target,
-                              mfa::PointSet<T>*& convert)
-    {
-        VectorX<T> sMins = source->mins();
-        VectorX<T> sMaxs = source->maxs();
-        VectorX<T> sDiff = sMaxs - sMins;
-
-        // Compute parametrization of target points w.r.t. source domain
-        shared_ptr<mfa::Param<T>> new_param = make_shared<mfa::Param<T>>(dom_dim);
-        new_param->param_list.resize(target->npts, dom_dim);
-        for (size_t k = 0; k < dom_dim; k++)
-        {
-            new_param->param_list.col(k) = (target->domain.col(k).array() - sMins(k)) * (1/sDiff(k));
-        }
-
-        // Set parametrization object for the PointSet we will decode into
-        if (convert)
-        {
-            cerr << "Overwriting existing pointset in convertParams()" << endl;
-            delete convert;
-            convert = nullptr;
-        }
-        convert = new mfa::PointSet<T>(new_param, source->model_dims());
-    }
-
     void computeRemap(
         const diy::Master::ProxyWithLink&   cp,
         mfa::MFAInfo&   info)
@@ -572,7 +546,6 @@ struct CBlock : public BlockBase<T>
         }
 
         // Compute parametrization of roms points w.r.t mpas domain
-        // convertParams(mpas_input, roms_input, mpas_approx);
         mpas_approx = new mfa::PointSet<T>(roms_input->params, roms_input->model_dims());
 
         // Write out collocation matrices for encoding and decoding
