@@ -144,17 +144,28 @@ int main(int argc, char** argv)
     mfa_info.regularization   = regularization;
     mfa_info.reg1and2         = reg1and2;
 
+    // Read in data
+    double init_time = MPI_Wtime();
+    master.foreach([&](B* b, const diy::Master::ProxyWithLink&cp)
+    {
+        b->varNames = varNames;
+        b->initMOAB(local, dom_dim);
+        b->readTargetData<double>(cp, romsfile);
+        b->readSourceData<double>(cp, mpasfile);
+    });
+    init_time = MPI_Wtime() - init_time;
+
     // Perform the remapping
     double encode_time = MPI_Wtime();
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
     {
         // Customize remapper block
         b->verbose = verbose;
-        b->dumpMatrices = true;
+        b->dumpMatrices = false;
         b->addBdryData = true;
 
         // Do the remapping
-        b->remap(cp, local, mpasfile, romsfile, varNames, mfa_info);
+        b->remap(cp, mfa_info);
     });
     encode_time = MPI_Wtime() - encode_time;
 
@@ -168,6 +179,7 @@ int main(int argc, char** argv)
     fmt::print("\n------- Final block results --------\n");
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
             { b->print_model(cp); });
+    fmt::print("startup time          = {:.3} s.\n", init_time);
     fmt::print("encoding time         = {:.3} s.\n", encode_time);
     fmt::print("-------------------------------------\n\n");
 

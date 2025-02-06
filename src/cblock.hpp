@@ -556,10 +556,16 @@ struct CBlock : public BlockBase<T>
         }
 
         // Create MFA model from source data
-        mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted);
-
+        for (int l = 0; l < varNames.size(); l++)
+        {
+            mfa->FixedEncodeVar(l, *mpas_input, info.regularization, info.reg1and2, info.weighted);
+        }
+        
         // Evaluate MFA at target mesh locations
-        mfa->Decode(*mpas_approx, false);
+        for (int l = 0; l < varNames.size(); l++)
+        {
+            mfa->DecodeVar(l, *mpas_approx, false);
+        }
 
         // Add remapped values as new tags
         for (int l = 0; l < varNames.size(); l++)
@@ -621,17 +627,8 @@ struct CBlock : public BlockBase<T>
 
     void remap(
         const diy::Master::ProxyWithLink&   cp,
-        MPI_Comm        comm,
-        string          sourceFilename,
-        string          targetFilename,
-        vector<string>  varNames,
         mfa::MFAInfo&   info)
     {
-        this->varNames = varNames;
-
-        initMOAB(comm, info.dom_dim);               // Start MOAB IO
-        readTargetData<double>(cp, targetFilename);
-        readSourceData<double>(cp, sourceFilename);
         setParameterizations();
         this->setup_MFA(cp, info);
         computeRemap(cp, info);
