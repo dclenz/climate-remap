@@ -325,13 +325,28 @@ struct CBlock : public BlockBase<T>
 
     void computeBbox()
     {
-        // bboxMins = VectorX<T>::Zero(geomDim);
-        // bboxMaxs = VectorX<T>::Zero(geomDim);
-        // for (int i = 0; i < geomDim; i++)
-        // {
-        //     bboxMins(i) = std::min(sourceMins(i), targetMins(i));
-        //     bboxMaxs(i) = std::max(sourceMaxs(i), targetMaxs(i));
-        // }
+        // Compute bounding boxes for source and target data
+        if (dom_dim == 2)   // if dom_dim < geomDim, assume the data lies on a plane
+        {
+            VectorX<T> n = mfa::estimateSurfaceNormal<T>(roms_input->domain.leftCols(3));
+            auto [a, b] = mfa::getPlaneVectors<T>(n);
+
+            if (verbose >= 2)
+            {
+                fmt::print("Target Orientation:\n");
+                fmt::print("  a: {}\n", mfa::print_vec(a));
+                fmt::print("  b: {}\n", mfa::print_vec(b));
+                fmt::print("  n: {}\n", mfa::print_vec(n));
+            }
+
+            targetBox = mfa::Bbox<T>({a, b, n}, *roms_input);
+            sourceBox = mfa::Bbox<T>(targetBox.basis, *mpas_input); // Source box gets the same orientation as target
+        }
+        else    // if dom_dim == geomDim, use axis-aligned bounding boxes
+        {
+            targetBox = mfa::Bbox<T>(*roms_input);
+            sourceBox = mfa::Bbox<T>(*mpas_input);
+        }
 
         // Compute superset of targetBox and sourceBox
         bbox = targetBox.merge(sourceBox); 
@@ -448,25 +463,6 @@ struct CBlock : public BlockBase<T>
         {
             addSourceVariable<V>(cp, filename, varNames[l], l);
         }
-
-        VectorX<T> n, a, b;
-        n = mfa::estimateSurfaceNormal<T>(mpas_input->domain.leftCols(3));
-        auto vecs = mfa::getPlaneVectors<T>(n);
-        a = vecs.first;
-        b = vecs.second;
-
-        if (verbose >= 2)
-        {
-            fmt::print("Source Orientation:\n");
-            fmt::print("  a: {}\n", mfa::print_vec(a));
-            fmt::print("  b: {}\n", mfa::print_vec(b));
-            fmt::print("  n: {}\n", mfa::print_vec(n));
-        }
-
-        // NOTE: here we are forcing the sourceoBox to be oriented
-        //       the same way as the targetBox
-        // TODO: Add a warning if the two orientations differ "too much"
-        sourceBox = mfa::Bbox<T>(targetBox.basis, *mpas_input);
     }
 
     template <typename V>
@@ -510,22 +506,6 @@ struct CBlock : public BlockBase<T>
                 roms_input->domain(i, j) = coord[j];
             }
         }
-
-        VectorX<T> n, a, b;
-        n = mfa::estimateSurfaceNormal<T>(roms_input->domain.leftCols(3));
-        auto vecs = mfa::getPlaneVectors<T>(n);
-        a = vecs.first;
-        b = vecs.second;
-
-        if (verbose >= 2)
-        {
-            fmt::print("Target Orientation:\n");
-            fmt::print("  a: {}\n", mfa::print_vec(a));
-            fmt::print("  b: {}\n", mfa::print_vec(b));
-            fmt::print("  n: {}\n", mfa::print_vec(n));
-        }
-
-        targetBox = mfa::Bbox<T>({a, b, n}, *roms_input);
     }
 
     void setParameterizations()
