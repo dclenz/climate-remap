@@ -544,7 +544,7 @@ struct CBlock : public BlockBase<T>
         // Evaluate MFA at target mesh locations
         for (int l = 0; l < varNames.size(); l++)
         {
-            mfa->DecodeVar(l, *mpas_approx, false);
+            mfa->DecodeVar(l, *mpas_approx);
         }
 
         // Add remapped values as new tags
