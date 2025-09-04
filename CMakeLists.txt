@@ -5,7 +5,7 @@ option                      (wrapped_mpi    "MPI compiler wrapper requires no fu
 
 # C++11
 if                          (NOT DEFINED CMAKE_CXX_STANDARD)
-    set                     (CMAKE_CXX_STANDARD 11)
+    set                     (CMAKE_CXX_STANDARD 17)
 endif                       ()
 
 set                         (CMAKE_POSITION_INDEPENDENT_CODE ON)
