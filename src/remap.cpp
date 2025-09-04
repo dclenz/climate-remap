@@ -87,16 +87,16 @@ int main(int argc, char** argv)
     }
 
     // print input arguments
-    fmt::print("--------- MFA Settings ----------\n");
-    fmt::print("pt_dim = {}\t dom_dim = {}\n", pt_dim, dom_dim);
-    fmt::print("geom_deg = {}\t geom_nctrl = {}\n", geom_degree, geom_nctrl);
-    fmt::print("vars_deg = {}\t vars_nctrl = {}\n", vars_degree, mfa::print_vec(vars_nctrl));
-    fmt::print("encoding type = {}\n", adaptive ? "adaptive" : "fixed");
+    fmt::print(stderr, "--------- MFA Settings ----------\n");
+    fmt::print(stderr, "pt_dim = {}\t dom_dim = {}\n", pt_dim, dom_dim);
+    fmt::print(stderr, "geom_deg = {}\t geom_nctrl = {}\n", geom_degree, geom_nctrl);
+    fmt::print(stderr, "vars_deg = {}\t vars_nctrl = {}\n", vars_degree, mfa::print_vec(vars_nctrl));
+    fmt::print(stderr, "encoding type = {}\n", adaptive ? "adaptive" : "fixed");
     if (adaptive)
-        fmt::print("error = {}\t max rounds = {}\n", e_threshold, (rounds == 0 ? "unlimited" : to_string(rounds)));
+        fmt::print(stderr, "error = {}\t max rounds = {}\n", e_threshold, (rounds == 0 ? "unlimited" : to_string(rounds)));
     
     string reg_type = regularization == 0 ? "N/A" : (reg1and2 > 0 ? "1st and 2nd derivs" : "2nd derivs only");
-    fmt::print("regularization = {}, type: {}\n", regularization, reg_type);
+    fmt::print(stderr, "regularization = {}, type: {}\n", regularization, reg_type);
 
     string thread_type = "undefined";
 #ifdef MFA_TBB
@@ -105,10 +105,10 @@ int main(int argc, char** argv)
 #ifdef MFA_SERIAL
     thread_type = "serial";
 #endif
-    fmt::print("threading: {}\n", thread_type);
-    fmt::print("MPAS file name: {}\n", mpasfile);
-    fmt::print("ROMS file name: {}\n", romsfile);
-    fmt::print("Variables to remap: {}\n", mfa::print_vec(varNames));
+    fmt::print(stderr, "threading: {}\n", thread_type);
+    fmt::print(stderr, "MPAS file name: {}\n", mpasfile);
+    fmt::print(stderr, "ROMS file name: {}\n", romsfile);
+    fmt::print(stderr, "Variables to remap: {}\n", mfa::print_vec(varNames));
 
     // initialize DIY
     diy::FileStorage          storage("./DIY.XXXXXX"); // used for blocks to be moved out of core
@@ -176,12 +176,12 @@ int main(int argc, char** argv)
     });
 
     // print results
-    fmt::print("\n------- Final block results --------\n");
+    fmt::print(stderr, "\n------- Final block results --------\n");
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
             { b->print_model(cp); });
-    fmt::print("startup time          = {:.3} s.\n", init_time);
-    fmt::print("encoding time         = {:.3} s.\n", encode_time);
-    fmt::print("-------------------------------------\n\n");
+    fmt::print(stderr, "startup time          = {:.3} s.\n", init_time);
+    fmt::print(stderr, "encoding time         = {:.3} s.\n", encode_time);
+    fmt::print(stderr, "-------------------------------------\n\n");
 
     // save the results in diy format
     string outname = "remap.mfa";

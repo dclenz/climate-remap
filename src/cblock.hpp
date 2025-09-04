@@ -73,7 +73,7 @@ struct MBReader
 
     void loadSourceMesh(string filename_)
     {
-        cout << "MBReader: Reading remap source file " << filename_ << endl;
+        fmt::print(stderr, "MBReader: Reading remap source file {}\n", filename_);
         sourceFilename = filename_;
 
         mb->create_meshset(MESHSET_SET, sourceFileSet);
@@ -100,7 +100,7 @@ struct MBReader
 
     void loadTargetMesh(string filename_)
     {
-        cout << "MBReader: Reading remap target file " << filename_ << endl;
+        fmt::print(stderr, "MBReader: Reading remap target file {}\n", filename_);
         targetFilename = filename_;
 
         //
@@ -132,7 +132,7 @@ struct MBReader
     {
         if (!sourceFileSet)
         {
-            cerr << "MBReader Error: Cannot load source boundary, source file has not been read.\nExiting." << endl;
+            fmt::print(stderr, "MBReader Error: Cannot load source boundary, source file has not been read.\n");
             exit(1);
         }
         
@@ -151,7 +151,7 @@ struct MBReader
         }
         else
         {
-            cerr << "ERROR: Unsupported cellDim in MBReader::loadSourceBdry()\nExiting" << endl;
+            fmt::print(stderr, "ERROR: Unsupported cellDim in MBReader::loadSourceBdry()\n");
             exit(1);
         }
 
@@ -166,7 +166,7 @@ struct MBReader
             }
             else if (neighbors.size() == 0)
             {
-                cerr << "ERROR: Found face with no parent cells" << endl;
+                fmt::print(stderr, "ERROR: Found face with no parent cells\n");
                 exit(1);
             }
         }
@@ -176,7 +176,7 @@ struct MBReader
     {
         if (sourceVertices.size() == 0)
         {
-            cerr << "Warning: Attempted to compute sourceVertexBounds but no vertices found." << endl;
+            fmt::print(stderr, "Warning: Attempted to compute sourceVertexBounds but no vertices found.\n");
         }
 
         mins = VectorX<V>::Zero(geomDim);
@@ -200,7 +200,7 @@ struct MBReader
     {
         if (targetVertices.size() == 0)
         {
-            cerr << "Warning: Attempted to compute targetVertexBounds but no vertices found." << endl;
+            fmt::print(stderr, "Warning: Attempted to compute targetVertexBounds but no vertices found.\n");
         }
 
         mins = VectorX<V>::Zero(geomDim);
@@ -333,10 +333,10 @@ struct CBlock : public BlockBase<T>
 
             if (verbose >= 2)
             {
-                fmt::print("Target Orientation:\n");
-                fmt::print("  a: {}\n", mfa::print_vec(a));
-                fmt::print("  b: {}\n", mfa::print_vec(b));
-                fmt::print("  n: {}\n", mfa::print_vec(n));
+                fmt::print(stderr, "Target Orientation:\n");
+                fmt::print(stderr, "  a: {}\n", mfa::print_vec(a));
+                fmt::print(stderr, "  b: {}\n", mfa::print_vec(b));
+                fmt::print(stderr, "  n: {}\n", mfa::print_vec(n));
             }
 
             targetBox = mfa::Bbox<T>({a, b, n}, *roms_input);
@@ -355,12 +355,12 @@ struct CBlock : public BlockBase<T>
         // n.b. this debug step could be slow as it loops completely through both data sets
         if (!bbox.doesContain(*mpas_input, 2))
         {
-            fmt::print("ERROR: Bounding box does not contain all of source data\n");
+            fmt::print(stderr, "ERROR: Bounding box does not contain all of source data\n");
             exit(1);
         }
         if (!bbox.doesContain(*roms_input, 2))
         {
-            fmt::print("ERROR: Bounding box does not contain all of target data\n");
+            fmt::print(stderr, "ERROR: Bounding box does not contain all of target data\n");
             exit(1);
         }
 
@@ -396,7 +396,7 @@ struct CBlock : public BlockBase<T>
                 mbr->mb->get_adjacencies(&mbr->sourceBdryFaces[j], 1, 3, false, parent);
                 if (parent.size() != 1)
                 {
-                    cerr << "ERROR: Expected a single parent element" << endl;
+                    fmt::print(stderr, "ERROR: Expected a single parent element\n");
                     exit(1);
                 }
 
@@ -413,9 +413,9 @@ struct CBlock : public BlockBase<T>
     {
         if (!roms_input)
         {
-            cerr << "ERROR: Cannot read source data before target data when remapping." << endl;
-            cerr << "       Source data model needs to know the bounding box of the target data ahead of time." << endl;
-            cerr << "       Exiting." << endl;
+            fmt::print(stderr, "ERROR: Cannot read source data before target data when remapping.\n");
+            fmt::print(stderr, "       Source data model needs to know the bounding box of the target data ahead of time.\n");
+            fmt::print(stderr, "       Exiting.\n");
             exit(1);
         }
 
@@ -571,10 +571,10 @@ struct CBlock : public BlockBase<T>
     // Write .mb files as a VTK file for debugging
     void writeVTK()
     {
-        cerr << "Writing remapped data to vtk..." << flush;
+        fmt::print(stderr, "Writing remapped data to vtk...");
         mbr->mb->write_mesh("remap_out.vtk", &mbr->targetFileSet, 1);
         mbr->mb->write_mesh("source_out.vtk", &mbr->sourceFileSet, 1);
-        cerr << "done." << endl;
+        fmt::print(stderr, "done.\n");
     }
 
     // Set custom knots based on depth levels in 3D
@@ -627,47 +627,40 @@ struct CBlock : public BlockBase<T>
         }
         // print number of control points per dimension only if there is one tensor
         if (model.ntensors() == 1)
-            cerr << "# output ctrl pts     = [ " << tot_nctrl_pts_dim.transpose() << " ]" << endl;
-        cerr << "tot # output ctrl pts = " << tot_nctrl_pts << endl;
+            fmt::print(stderr, "# output ctrl pts     = [ {} ]\n", tot_nctrl_pts_dim.transpose());
+        fmt::print(stderr, "tot # output ctrl pts = {}\n", tot_nctrl_pts);
 
-        cerr << "# output knots        = [ ";
+        fmt::print(stderr, "# output knots        = [ ");
         for (auto j = 0 ; j < model.tmesh.all_knots.size(); j++)
         {
-            cerr << model.tmesh.all_knots[j].size() << " ";
+            fmt::print(stderr, "{} ", model.tmesh.all_knots[j].size());
         }
-        cerr << "]" << endl;
+        fmt::print(stderr, "]\n");
     }
 
     void print_model(const diy::Master::ProxyWithLink& cp)    // error was computed
     {
         if (!mfa)
         {
-            fmt::print("gid = {}: No MFA found.\n", cp.gid());
+            fmt::print(stderr, "gid = {}: No MFA found.\n", cp.gid());
             return;
         }
 
-        fmt::print("gid = {}\n", cp.gid());
+        fmt::print(stderr, "gid = {}\n", cp.gid());
 
         // geometry
-        fmt::print("---------------- geometry model ----------------\n");
+        fmt::print(stderr, "---------------- geometry model ----------------\n");
         print_knots_ctrl(mfa->geom());
-        fmt::print("------------------------------------------------\n");
+        fmt::print(stderr, "------------------------------------------------\n");
 
         // science variables
-        fmt::print("\n----------- science variable models ------------\n");
+        fmt::print(stderr, "\n----------- science variable models ------------\n");
         for (int i = 0; i < mfa->nvars(); i++)
         {
-            fmt::print("-------------------- var {} --------------------\n", i);
+            fmt::print(stderr, "-------------------- var {} --------------------\n", i);
             print_knots_ctrl(mfa->var(i));
-            fmt::print("------------------------------------------------\n");
-            // ray_stats.print_var(i);
-            // fmt::print("------------------------------------------------\n");
+            fmt::print(stderr, "------------------------------------------------\n");
         }
-        
-        // ray_stats.print_max();
-        // fmt::print("------------------------------------------------\n");
-        // fmt::print("# input points        = {}\n", input->npts);
-        // fmt::print("compression ratio     = {:.2f}\n", this->compute_compression());
     }
 };
 
