@@ -3,7 +3,7 @@ cmake_minimum_required      (VERSION 3.12)
 
 option                      (wrapped_mpi    "MPI compiler wrapper requires no further MPI libs, true/false (default false)" OFF     )
 
-# C++11
+# C++17
 if                          (NOT DEFINED CMAKE_CXX_STANDARD)
     set                     (CMAKE_CXX_STANDARD 17)
 endif                       ()
@@ -46,8 +46,8 @@ endif                       ()
 
 if                          (MOAB_PATH)
     message                 ("Found MOAB_PATH")
-    set                     (MOAB_LIBRARY ${MOAB_PATH}/lib/libMOAB.so)
-    set                     (MOAB_IMESH_LIBRARY ${MOAB_PATH}/lib/libiMesh.so)
+    set                     (MOAB_LIBRARY ${MOAB_PATH}/lib/libMOAB.a)
+    # set                     (MOAB_IMESH_LIBRARY ${MOAB_PATH}/lib/libiMesh.so)
     set                     (MOAB_INCLUDE_DIR ${MOAB_PATH}/include)
     add_definitions         (-DMOAB_PATH)
 else                        ()
@@ -55,9 +55,9 @@ else                        ()
     find_package            (moab REQUIRED)
 endif                       ()
 message                     ("MOAB_LIBRARY = ${MOAB_LIBRARY}")
-message                     ("MOAB_IMESH_LIBRARY = ${MOAB_IMESH_LIBRARY}")
+# message                     ("MOAB_IMESH_LIBRARY = ${MOAB_IMESH_LIBRARY}")
 message                     ("MOAB_INCLUDE_DIR = ${MOAB_INCLUDE_DIR}")
-set                         (libraries ${libraries} ${MOAB_LIBRARY} ${MOAB_IMESH_LIBRARY})
+set                         (libraries ${libraries} ${MOAB_LIBRARY})# ${MOAB_IMESH_LIBRARY})
 include_directories         (SYSTEM ${MOAB_INCLUDE_DIR})
 
 # Henson

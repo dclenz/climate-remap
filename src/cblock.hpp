@@ -67,8 +67,8 @@ struct MBReader
 
     ~MBReader()
     {
-        delete mb;
         delete pc;
+        delete mb;
     }
 
     void loadSourceMesh(string filename_)
