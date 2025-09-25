@@ -18,7 +18,7 @@ spack develop mfa@master~tests~examples build_type=RelWithDebInfo
 spack add mfa
 
 # add mfa-remap in develop mode
-spack develop mfa-remap@master
+spack develop mfa-remap@master build_type=RelWithDebInfo
 spack add mfa-remap
 
 spack add henson+python+mpi-wrappers
