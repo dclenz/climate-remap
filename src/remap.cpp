@@ -22,13 +22,13 @@
 #include <diy/io/block.hpp>
 
 #include "opts.h"
-#include "cblock.hpp"
+#include "cblock2.hpp"
 
 //moab
 #include    "moab/ParallelComm.hpp"
 
 using namespace std;
-using B = CBlock<real_t>;
+using B = CBlock2<real_t>;
 
 #define ERR {if(rval!=MB_SUCCESS)printf("MOAB error at line %d in %s\n", __LINE__, __FILE__);}
 
@@ -151,7 +151,8 @@ int main(int argc, char** argv)
         b->varNames = varNames;
         b->initMOAB(local, dom_dim);
         b->readTargetData<double>(cp, romsfile);
-        b->readSourceData<double>(cp, mpasfile);
+        const mfa::Bbox<real_t> sourceReadBbox(b->targetMins, b->targetMaxs);
+        b->readSourceData<double>(cp, mpasfile, sourceReadBbox);
     });
     init_time = MPI_Wtime() - init_time;
 
