@@ -88,14 +88,10 @@ struct MBReader
         sourceFilename = filename_;
 
         sourceMb->create_meshset(MESHSET_SET, sourceFileSet);
-        fmt::print(stderr, "MBReader: Starting to load source mesh file {}\n", filename_);
         rval = sourceMb->load_file(sourceFilename.c_str(), &sourceFileSet); MB_CHK_ERR_RET(rval);
-        fmt::print(stderr, "MBReader: Finished loading source mesh file {}\n", filename_);
 
         // Get vertices
-        fmt::print(stderr, "MBReader: Getting vertices for source mesh file {}\n", filename_);
         rval = sourceMb->get_entities_by_type(sourceFileSet, MBVERTEX, sourceVertices); MB_CHK_ERR_RET(rval);
-        fmt::print(stderr, "MBReader: Finished getting vertices for source mesh file {}\n", filename_);
 
         // Get vertex coordinates
         sourceCoords.resize(sourceVertices.size()*3);
@@ -260,6 +256,13 @@ struct CBlock2 : public BlockBase<T>
 
     bool dumpMatrices = false;
     bool addBdryData = true;
+
+    // Source (MPAS) mesh: ECEF Cartesian in meters. Target (ROMS) mesh:
+    // unit sphere. We rescale target coords into MPAS's ECEF frame on read
+    // so source/target bounding boxes share a common scale. The MOAB
+    // target mesh is left in unit-sphere units (writeVTK preserves the
+    // original target frame).
+    static constexpr T R_earth = 6371220.0;
 
     mfa::PointSet<T>*   mpas_input;
     mfa::PointSet<T>*   mpas_approx;
@@ -841,6 +844,10 @@ struct CBlock2 : public BlockBase<T>
 
         mbr->loadTargetMesh(filename);
         mbr->targetVertexBounds(targetMins, targetMaxs);
+
+        targetMins *= R_earth;
+        targetMaxs *= R_earth;
+
         if (verbose >= 1) mfa::print_bbox(targetMins, targetMaxs, "Target Bounding");
 
         int npts = 0;
@@ -866,7 +873,7 @@ struct CBlock2 : public BlockBase<T>
             mbr->targetMb->get_coords(&(*it), 1, coord.data());
             for (int j = 0; j < geomDim; j++)
             {
-                roms_input->domain(i, j) = coord[j];
+                roms_input->domain(i, j) = static_cast<T>(coord[j]) * R_earth;
             }
         }
     }

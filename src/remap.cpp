@@ -148,6 +148,7 @@ int main(int argc, char** argv)
     double init_time = MPI_Wtime();
     master.foreach([&](B* b, const diy::Master::ProxyWithLink&cp)
     {
+        b->verbose = verbose;
         b->varNames = varNames;
         b->initMOAB(local, dom_dim);
         b->readTargetData<double>(cp, romsfile);
@@ -161,7 +162,6 @@ int main(int argc, char** argv)
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
     {
         // Customize remapper block
-        b->verbose = verbose;
         b->dumpMatrices = false;
         b->addBdryData = true;
 
