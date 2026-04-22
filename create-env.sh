@@ -17,8 +17,8 @@ spack env activate $SPACKENV
 spack develop mfa@master~tests~examples build_type=RelWithDebInfo
 spack add mfa
 
-# add mfa-remap in develop mode
-spack develop mfa-remap@master build_type=RelWithDebInfo
+# add mfa-remap in develop mode (point at this local checkout)
+spack develop --path $PWD mfa-remap@master build_type=RelWithDebInfo
 spack add mfa-remap
 
 spack add henson+python+mpi-wrappers
@@ -31,10 +31,9 @@ spack install moab
 spack install henson
 
 # set build flags
-echo "setting flags for building moab-example"
+echo "setting flags for building mfa-remap"
 export MFA_PATH=`spack location -i mfa`
 export HIGHFIVE_PATH=`spack location -i highfive`
-export MOAB_PATH=`spack location -i moab`
 export HENSON_PATH=`spack location -i henson`
 
 echo "installing mfa-remap"
@@ -44,11 +43,5 @@ export MFA_REMAP_PATH=`spack location -i mfa-remap`
 # reset the environment (workaround for spack behavior)
 spack env deactivate
 spack env activate $SPACKENV
-
-
-
-# set LD_LIBRARY_PATH
-echo "setting flags for running moab-example"
-export LD_LIBRARY_PATH=$MOAB_PATH/lib:$LD_LIBRARY_PATH
 
 

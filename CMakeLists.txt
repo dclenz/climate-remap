@@ -40,23 +40,11 @@ find_package                (Threads)
 # set                         (libraries ${libraries} fmt::fmt)
 
 # Moab
-if                          (NOT DEFINED MOAB_PATH AND DEFINED ENV{MOAB_PATH})
-    set                     (MOAB_PATH $ENV{MOAB_PATH})
-endif                       ()
-
-if                          (MOAB_PATH)
-    message                 ("Found MOAB_PATH")
-    set                     (MOAB_LIBRARY ${MOAB_PATH}/lib/libMOAB.a)
-    set                     (MOAB_INCLUDE_DIR ${MOAB_PATH}/include)
-    add_definitions         (-DMOAB_PATH)
-else                        ()
-    message                 ("Looking for Moab")
-    find_package            (moab REQUIRED)
-endif                       ()
-message                     ("MOAB_LIBRARY = ${MOAB_LIBRARY}")
-message                     ("MOAB_INCLUDE_DIR = ${MOAB_INCLUDE_DIR}")
-set                         (libraries ${libraries} ${MOAB_LIBRARY})
-include_directories         (SYSTEM ${MOAB_INCLUDE_DIR})
+find_package                (MOAB REQUIRED)
+message                     ("MOAB_LIBRARIES = ${MOAB_LIBRARIES}")
+message                     ("MOAB_INCLUDE_DIRS = ${MOAB_INCLUDE_DIRS}")
+set                         (libraries ${libraries} ${MOAB_LIBRARIES})
+include_directories         (SYSTEM ${MOAB_INCLUDE_DIRS})
 
 # Henson
 if                          (HENSON_LIBRARY AND HENSON_PMPI_LIBRARY)
