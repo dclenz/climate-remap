@@ -152,8 +152,9 @@ int main(int argc, char** argv)
         b->varNames = varNames;
         b->initMOAB(local, dom_dim);
         b->readTargetData<double>(cp, romsfile);
-        const mfa::Bbox<real_t> sourceReadBbox(b->targetMins, b->targetMaxs);
+        // const mfa::Bbox<real_t> sourceReadBbox(b->targetMins, b->targetMaxs);
         b->readSourceData<double>(cp, mpasfile, sourceReadBbox);
+        b->readTargetDataFull();
     });
     init_time = MPI_Wtime() - init_time;
 

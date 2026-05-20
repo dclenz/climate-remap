@@ -274,6 +274,22 @@ struct CBlock2 : public BlockBase<T>
     mfa::Bbox<T> sourceBox;
     mfa::Bbox<T> targetBox;
     mfa::Bbox<T> bbox;
+    mfa::AffMap<T> planeMap;
+    mfa::BoundingSpace<T> targetBoundingSpace;
+    mfa::BoundingSpace<T> sourceBoundingSpace;
+    mfa::BoundingSpace<T> totalBoundingSpace;
+    VectorX<T> targetPlaneMins;
+    VectorX<T> targetPlaneMaxs;
+    VectorX<T> sourcePlaneMins;
+    VectorX<T> sourcePlaneMaxs;
+    
+    VectorX<T> sourceHeights;   // sourceHeights[i] is the height of mpas_input->domain(i, 2) relative to average sea height. Positive is above sea level.
+    VectorX<T> targetHeights;
+
+    T minSourceDepth;
+    T maxSourceDepth;
+    T minTargetDepth;
+    T maxTargetDepth;
 
     VectorX<T> sourceMins;
     VectorX<T> sourceMaxs;
@@ -350,7 +366,16 @@ struct CBlock2 : public BlockBase<T>
         mbr = new MBReader<T>(local, dim);
     }
 
-    void computeBbox()
+    void computeBbox3D()
+    {
+        sourceBox = mfa::Bbox<T>(*mpas_input);
+        targetBox = mfa::Bbox<T>(*roms_input);
+        bbox = sourceBox.merge(targetBox);
+
+        if (verbose >= 1) bbox.print();
+    }
+
+    void computeBbox2D()
     {
         // Compute bounding boxes for source and target data
         if (dom_dim == 2)   // if dom_dim < geomDim, assume the data lies on a plane
@@ -380,12 +405,17 @@ struct CBlock2 : public BlockBase<T>
         
         // Ensure that the full bounding box is a superset of both domains
         // n.b. this debug step could be slow as it loops completely through both data sets
-        if (!bbox.doesContain(*mpas_input, 2))
+        // Bbox::merge round-trips coords through basis*basis^T which is numerically lossy at
+        // ULP scale (~1.4e-9 at ECEF magnitudes); the default prec=1e-12 is ~1000x tighter
+        // than ULP at this scale, so we relax it to a scale-aware tolerance.
+        const T prec = R_earth * 1000 * std::numeric_limits<T>::epsilon();
+        bbox.pad(prec);
+        if (!bbox.doesContain(*mpas_input, 2, prec))
         {
             fmt::print(stderr, "ERROR: Bounding box does not contain all of source data\n");
             exit(1);
         }
-        if (!bbox.doesContain(*roms_input, 2))
+        if (!bbox.doesContain(*roms_input, 2, prec))
         {
             fmt::print(stderr, "ERROR: Bounding box does not contain all of target data\n");
             exit(1);
@@ -399,8 +429,9 @@ struct CBlock2 : public BlockBase<T>
     // bbox's rotated basis for compatibility with oriented boxes.
     bool elementIntersectsSourceReadBbox(
             EntityHandle         element,
-            const mfa::Bbox<T>&  sourceReadBbox) const
+            const mfa::BoundingSpace<T>&  boundingSpace) const
     {
+        // Get array of vertex element handles
         const EntityHandle* conn = nullptr;
         int nconn = 0;
         ErrorCode rval = mbr->sourceMb->get_connectivity(element, conn, nconn);
@@ -410,6 +441,7 @@ struct CBlock2 : public BlockBase<T>
             exit(1);
         }
 
+        // Get vector of coordinates for all element vertices
         vector<T> coords(geomDim * nconn);
         rval = mbr->sourceMb->get_coords(conn, nconn, coords.data());
         if (rval != MB_SUCCESS)
@@ -423,6 +455,7 @@ struct CBlock2 : public BlockBase<T>
         VectorX<T> xyz(geomDim);
         VectorX<T> rot;
 
+        // Compute min/max extents of vertices in readBoundingSpace's rotated basis
         for (int i = 0; i < nconn; i++)
         {
             for (int j = 0; j < geomDim; j++)
@@ -430,15 +463,16 @@ struct CBlock2 : public BlockBase<T>
                 xyz(j) = coords[geomDim * i + j];
             }
 
-            sourceReadBbox.toRotatedSpace(xyz, rot);
+            boundingSpace.toRefSpace(xyz, rot);
             elemMins = elemMins.cwiseMin(rot);
             elemMaxs = elemMaxs.cwiseMax(rot);
         }
 
+        // Check if any vertex extents exceed bounding space
         for (int j = 0; j < geomDim; j++)
         {
-            if (elemMaxs(j) < sourceReadBbox.rotatedMins(j) ||
-                elemMins(j) > sourceReadBbox.rotatedMaxs(j))
+            if (elemMaxs(j) < boundingSpace.refMins(j) ||
+                elemMins(j) > boundingSpace.refMaxs(j))
             {
                 return false;
             }
@@ -503,7 +537,7 @@ struct CBlock2 : public BlockBase<T>
 
     // Select source elements that intersect the requested bbox and then add
     // a one-ring halo around boundary elements.
-    void selectSourceElements(const mfa::Bbox<T>& sourceReadBbox)
+    void selectSourceElements(const mfa::BoundingSpace<T>& readBoundingSpace)
     {
         const int totalElements = static_cast<int>(mbr->sourceElements.size());
         vector<EntityHandle> sourceElementHandles(totalElements);
@@ -521,7 +555,7 @@ struct CBlock2 : public BlockBase<T>
 
         for (int i = 0; i < totalElements; i++)
         {
-            if (elementIntersectsSourceReadBbox(sourceElementHandles[i], sourceReadBbox))
+            if (elementIntersectsSourceReadBbox(sourceElementHandles[i], readBoundingSpace))
             {
                 selected[i] = 1;
                 coreSelected[i] = 1;
@@ -713,8 +747,7 @@ struct CBlock2 : public BlockBase<T>
     template <typename V>
     void readSourceData(
             const   diy::Master::ProxyWithLink& cp,
-                    string filename,
-            const   mfa::Bbox<T>& sourceReadBbox)
+                    string filename)
     {
         // if (!roms_input)
         // {
@@ -724,13 +757,21 @@ struct CBlock2 : public BlockBase<T>
         //     exit(1);
         // }
 
+        if (dom_dim != 3)
+        {
+            fmt::print(stderr, "ERROR: Set dom_dim to 3 (remove this after debugging).\n");
+            exit(1);
+        }
+
+        mfa::Bbox<T> sourceReadBbox;
+
         mbr->loadSourceMesh(filename);
         // mbr->loadSourceBdry();
         mbr->sourceVertexBounds(sourceMins, sourceMaxs);
         if (verbose >= 1)
         {
-            mfa::print_bbox(sourceMins, sourceMaxs, "Source Bounding");
-            sourceReadBbox.print("Source Read Bbox");
+            // mfa::print_bbox(sourceMins, sourceMaxs, "Source Bounding");
+            targetBoundingSpace.print("Target Bounding Space");
         }
 
         // Fresh source metadata for each load.
@@ -742,7 +783,27 @@ struct CBlock2 : public BlockBase<T>
         selectedSourceElements.clear();
 
         // Select the source chunk to read.
-        selectSourceElements(sourceReadBbox);
+        // Sets: numSourceElements, selectedSourceElements
+        selectSourceElements(targetBoundingSpace);
+
+        // Loop through selectedSourceElements and compute the bounding box of their centroids in the plane of the target data. 
+        MatrixX<T> sourcePointLocations(numSourceElements, geomDim);
+        vector<T> ptCoords(geomDim);
+        int i = 0;
+        for (auto it = selectedSourceElements.begin(), end = selectedSourceElements.end(); it != end; ++it, ++i)
+        {
+            mbr->sourceMb->get_coords(&(*it), 1, ptCoords.data());
+            for (int j = 0; j < geomDim; j++)
+            {
+                sourcePointLocations(i, j) = ptCoords[j];
+            }
+        }
+        sourceBoundingSpace = mfa::BoundingSpace<T>(planeMap, sourcePointLocations);
+        totalBoundingSpace = sourceBoundingSpace.merge(targetBoundingSpace);
+
+        targetBoundingSpace.print("Target Bounding Space");
+        sourceBoundingSpace.print("Source Bounding Space");
+        totalBoundingSpace.print("Total Bounding Space");
 
         // Compute metadata about extruded 3d mesh
         computeSourceLevelInfo();
@@ -750,7 +811,7 @@ struct CBlock2 : public BlockBase<T>
 
         // Set up MFA PointSet
         VectorXi modelDims = VectorXi::Ones(varNames.size() + 1); // one model per remapped variable, plus geometry
-        modelDims(0) = geomDim;
+        modelDims(0) = 3; // points are 3D
 
         // model_dims << geomDim, 1, 1;          // geometry, salinity, temperature
         mpas_input = new mfa::PointSet<T>(dom_dim, modelDims, numSourceCells);
@@ -778,6 +839,9 @@ struct CBlock2 : public BlockBase<T>
         // Build one 3D point per active extruded cell using axial heights:
         // top = ssh - cumulative_thickness; bottom = top - layerThickness.
         int elementID = 0;
+        minSourceDepth = numeric_limits<T>::max();
+        maxSourceDepth = numeric_limits<T>::lowest();
+        sourceHeights.resize(numSourceCells);
         vector<V> centroid(geomDim);
         for (auto it = selectedSourceElements.begin(), end = selectedSourceElements.end(); it != end; ++it, ++elementID)
         {
@@ -811,16 +875,37 @@ struct CBlock2 : public BlockBase<T>
 
                 // TODO: adjust top layer
                 T layerThickness = layerThicknessData[elementID * layerTagLength + level];
-                T top = sshData[elementID] - cumulativeThickness;
+                T top = 0;
+                if (level == 0)
+                {
+                    top = sshData[elementID];
+                }
+                else
+                {
+                    top = -1 * cumulativeThickness;
+                }
+                // T top = sshData[elementID] - cumulativeThickness;
                 T bottom = top - layerThickness;
-                T axialCentroid = static_cast<T>(0.5) * (top + bottom);
+                T axialCentroid = 0.5 * (top + bottom);
 
                 for (int k = 0; k < geomDim; k++)
                 {
                     mpas_input->domain(cellID, k) = static_cast<T>(centroid[k]) + axialCentroid * normal(k);
                 }
 
+                // Set point height for later use in calculating parameterizations
+                sourceHeights(cellID) = axialCentroid;
+
                 cumulativeThickness += layerThickness;
+            }
+
+            if (sshData[elementID] > maxSourceHeight)
+            {
+                maxSourceHeight = sshData[elementID];
+            }
+            if (-1 * cumulativeThickness < minSourceHeight)
+            {
+                minSourceHeight = -1 * cumulativeThickness;
             }
         }
 
@@ -829,6 +914,26 @@ struct CBlock2 : public BlockBase<T>
         {
             addSourceVariable<V>(cp, filename, varNames[l], l);
         }
+    }
+
+    mfa::AffMap<T> computeTargetPlaneMap()
+    {
+        VectorX<T> n = mfa::estimateSurfaceNormal<T>(roms_input->domain.leftCols(3));
+        auto [a, b] = mfa::getPlaneVectors<T>(n);
+        VectorX<T> center = roms_input->domain.leftCols(3).colwise().mean();
+
+        if (verbose >= 2)
+        {
+            fmt::print(stderr, "Target Orientation:\n");
+            fmt::print(stderr, "  a: {}\n", mfa::print_vec(a));
+            fmt::print(stderr, "  b: {}\n", mfa::print_vec(b));
+            fmt::print(stderr, "  n: {}\n", mfa::print_vec(n));
+        }
+
+        return mfa::AffMap<T>(2, 3, center, {a, b});
+
+        // targetBox = mfa::Bbox<T>({a, b, n}, *roms_input);
+        // sourceBox = mfa::Bbox<T>(targetBox.basis, *mpas_input); // Source box gets the same orientation as target
     }
 
     template <typename V>
@@ -867,23 +972,134 @@ struct CBlock2 : public BlockBase<T>
             end = mbr->targetElements.end();
         }
 
-        roms_input = new mfa::PointSet<T>(dom_dim, modelDims, npts);
+        // roms_input = new mfa::PointSet<T>(dom_dim, modelDims, npts);
+        MatrixX<T> targetPointLocations(npts, geomDim);
         for ( ; it != end; ++it, ++i)
         {
             mbr->targetMb->get_coords(&(*it), 1, coord.data());
             for (int j = 0; j < geomDim; j++)
             {
-                roms_input->domain(i, j) = static_cast<T>(coord[j]) * R_earth;
+                // roms_input->domain(i, j) = static_cast<T>(coord[j]) * R_earth;
+                targetPointLocations(i, j) = static_cast<T>(coord[j]) * R_earth;
             }
+        }
+
+        planeMap = computeTargetPlaneMap();
+        // targetBoundingSpace = mfa::BoundingSpace<T>(planeMap, roms_input->domain.leftCols(3));
+        targetBoundingSpace = mfa::BoundingSpace<T>(planeMap, targetPointLocations);
+    }
+
+    template <typename V>
+    void readTargetDataFull()
+    {
+        int numTargetElements = mbr->targetElements.size();
+
+
+        // Read geometry drivers for extrusion
+        Tag sshTag;
+        Tag bathymetryTag;
+        Tag locationTag;
+        mbr->targetMb->tag_get_handle("SSH", sshTag);
+        mbr->targetMb->tag_get_handle("bathymetry", bathymetryTag);
+        mbr->targetMb->tag_get_handle("ROMS3DLocations", locationTag);
+
+        int locationTagLength = 0;
+        mbr->targetMb->tag_get_length(locationTag, locationTagLength);
+
+        if (locationTagLength <= 0)
+        {
+            fmt::print(stderr, "ERROR: Invalid location tag length {}\n", locationTagLength);
+            exit(1);
+        }
+
+        vector<T> sshData(numSourceElements);
+        vector<T> bathymetryData(numSourceElements);
+        vector<T> locationData(numSourceElements * locationTagLength);
+        mbr->targetMb->tag_get_data(sshTag, mbr->targetElements, sshData.data());
+        mbr->targetMb->tag_get_data(bathymetryTag, mbr->targetElements, bathymetryData.data());
+        mbr->targetMb->tag_get_data(locationTag, mbr->targetElements, locationData.data());
+
+        int i = 0;
+        minTargetDepth = numeric_limits<T>::max();
+        maxTargetDepth = numeric_limits<T>::lowest();
+        targetHeights.resize(numTargetElements);
+        vector<V> coord(geomDim);
+        VectorX<T> centroid(geomDim);
+        moab::Range::iterator it = mbr->targetElements.begin();
+        moab::Range::iterator end = mbr->targetElements.end();
+        for ( ; it != end; ++it, ++i)
+        {
+            // Get 2D element centroid
+            mbr->targetMb->get_coords(&(*it), 1, coord.data());
+            for (int k = 0; k < geomDim; k++)
+            {
+                centroid(k) = coord[k];
+            }
+
+            // Extrude in the normal direction by the depth value at each location
+            for (int j = 0; j < locationTagLength; j++)
+            {
+                int idx = i * locationTagLength + j;
+                T height = -1 * locationData[idx];
+                roms_input->domain.row(idx).leftCols(geomDim) = centroid + height * centroid.normalized();
+                targetHeights(idx) = height;
+            }
+
+            // Keep track of min and max z-depths
+            // SSH is a height, so it has opposite sign convention from bathymetry and depth.
+            // Our convention is that as height decreases, we move toward the ocean floor.
+            if (sshData[i] > maxTargetHeight)
+            {
+                maxTargetHeight = sshData[i];
+            }
+            if (-1 * bathymetryData[i] < minTargetHeight)
+            {
+                minTargetHeight = -1 * bathymetryData[i];
+            }
+            
+            i++;
         }
     }
 
     void setParameterizations()
     {
-        computeBbox();
-        roms_input->set_domain_params(bbox);
-        mpas_input->set_domain_params(bbox);
+        T minHeight = std::min(minSourceHeight, minTargetHeight);
+        T maxHeight = std::max(maxSourceHeight, maxTargetHeight);
+
+        MatrixX<T> sourceParams(mpas_input->npts, dom_dim);
+        MatrixX<T> targetParams(roms_input->npts, dom_dim);
+
+        // parameterization object
+        mfa::AffineMap<T> paramMap(totalBoudingSpace);
+
+        // Compute planar parameterization for source data
+        // Matri<T> xyz(geomDim);
+        MatrixX<T> param2d();
+        MatrixX<T> xyz = mpas_input->domain.leftCols(geomDim);
+        paramMap.transform(xyz, param2d, true);
+        sourceParams.leftCols(2) = param2d;
+        
+        // Compute axial parameterization for source data
+        sourceParams.col(2) = (sourceHeights.array() - minHeight) / (maxHeight - minHeight);
+
+        // Compute planar parameterization for target data
+        xyz = roms_input->domain.leftCols(geomDim);
+        paramMap.transform(xyz, param2d, true);
+        // totalBoundingSpace.toRefSpace(xyz.transpose(), param2d.transpose()); TODO need to normalize to [0,1]
+        targetParams.leftCols(2) = param2d; 
+
+        // Compute axial parameterization for target data
+        targetParams.col(2) = (targetHeights.array() - minHeight) / (maxHeight - minHeight);
+
+
+        mpas_input->set_custom_params(sourceParams);
+        roms_input->set_custom_params(targetParams);
+
+        // computeBbox();
+        // roms_input->set_domain_params(bbox);
+        // mpas_input->set_domain_params(bbox);
     }
+
 
     void computeRemap(
         const diy::Master::ProxyWithLink&   cp,
