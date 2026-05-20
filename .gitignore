@@ -1,8 +1,10 @@
 data/*
+.vscode/
 
 # Spack build objects
 spack-build-*
 spack-configure-*
+build-linux-*
 
 **/build
 
