@@ -97,8 +97,8 @@ struct MBReader
         sourceCoords.resize(sourceVertices.size()*3);
         rval = sourceMb->get_coords(sourceVertices, sourceCoords.data()); MB_CHK_ERR_RET(rval);
 
-        // Get mesh element rage
-        rval = sourceMb->get_entities_by_dimension(sourceFileSet, cellDim, sourceElements); MB_CHK_ERR_RET(rval);
+        // Get 2D mesh element rage
+        rval = sourceMb->get_entities_by_dimension(sourceFileSet, 2, sourceElements); MB_CHK_ERR_RET(rval);
 
         // Create map of element handles to range indices
         int idx = 0;
@@ -124,8 +124,53 @@ struct MBReader
         targetCoords.resize(targetVertices.size()*3);
         rval = targetMb->get_coords(targetVertices, targetCoords.data()); MB_CHK_ERR_RET(rval);
 
-        // Get mesh element rage
-        rval = targetMb->get_entities_by_dimension(targetFileSet, cellDim, targetElements); MB_CHK_ERR_RET(rval);
+        // Get 2D mesh element range
+        Range initialTargetElements;
+        rval = targetMb->get_entities_by_dimension(targetFileSet, 2, initialTargetElements); MB_CHK_ERR_RET(rval);
+
+        // // Filter to only those elements with ROMS_Mask==1
+        // Tag romsMaskTag;
+        // vector<unsigned long> romsMaskData(initialTargetElements.size());
+        // rval = targetMb->tag_get_handle("ROMS_Mask", romsMaskTag); MB_CHK_ERR_RET(rval);
+        // rval = targetMb->tag_get_data(romsMaskTag, initialTargetElements, romsMaskData.data()); MB_CHK_ERR_RET(rval);
+        // for (int i = 0; i < initialTargetElements.size(); i++)        {
+        //     if (romsMaskData[i] == 1)
+        //     {
+        //         targetElements.insert(initialTargetElements[i]);
+        //     }
+        // }
+
+        // fmt::print(stderr, "Initial target elements: {}, ROMS_Mask==1 target elements: {}\n", initialTargetElements.size(), targetElements.size());
+
+        // Filter to only those elements with ROMS_Mask==1 (robust)
+        Tag romsMaskTag;
+        rval = targetMb->tag_get_handle("ROMS_Mask", romsMaskTag); MB_CHK_ERR_RET(rval);
+
+        int tagLen = 0;
+        rval = targetMb->tag_get_length(romsMaskTag, tagLen); MB_CHK_ERR_RET(rval);
+        fmt::print(stderr, "ROMS_Mask tag length = {}\n", tagLen);
+
+        size_t N = initialTargetElements.size();
+        int stride = (tagLen > 0) ? tagLen : 1;
+        vector<int> romsMaskData;
+        romsMaskData.resize(N * stride);
+        rval = targetMb->tag_get_data(romsMaskTag, initialTargetElements, romsMaskData.data()); MB_CHK_ERR_RET(rval);
+
+        size_t count = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            unsigned long val = romsMaskData[i * stride]; // component 0
+            if (val == 1)
+            {
+                targetElements.insert(initialTargetElements[i]);
+                ++count;
+            }
+            if (i < 20)
+                fmt::print(stderr, "entity {} -> ROMS_Mask = {}\n", (unsigned long)initialTargetElements[i], val);
+        }
+
+        fmt::print(stderr, "Initial target elements: {}, ROMS_Mask==1 target elements: {}\n", N, count);
+
 
         // Create map of element handles to range indices
         int idx = 0;
@@ -286,10 +331,12 @@ struct CBlock2 : public BlockBase<T>
     VectorX<T> sourceHeights;   // sourceHeights[i] is the height of mpas_input->domain(i, 2) relative to average sea height. Positive is above sea level.
     VectorX<T> targetHeights;
 
-    T minSourceDepth;
-    T maxSourceDepth;
-    T minTargetDepth;
-    T maxTargetDepth;
+    T minHeight;
+    T maxHeight;
+    T minSourceHeight;
+    T maxSourceHeight;
+    T minTargetHeight;
+    T maxTargetHeight;
 
     VectorX<T> sourceMins;
     VectorX<T> sourceMaxs;
@@ -450,8 +497,9 @@ struct CBlock2 : public BlockBase<T>
             exit(1);
         }
 
-        VectorX<T> elemMins = VectorX<T>::Constant(geomDim, numeric_limits<T>::max());
-        VectorX<T> elemMaxs = VectorX<T>::Constant(geomDim, numeric_limits<T>::lowest());
+        const int refDim = boundingSpace.spaceDim;
+        VectorX<T> elemMins = VectorX<T>::Constant(refDim, numeric_limits<T>::max());
+        VectorX<T> elemMaxs = VectorX<T>::Constant(refDim, numeric_limits<T>::lowest());
         VectorX<T> xyz(geomDim);
         VectorX<T> rot;
 
@@ -469,13 +517,23 @@ struct CBlock2 : public BlockBase<T>
         }
 
         // Check if any vertex extents exceed bounding space
-        for (int j = 0; j < geomDim; j++)
+        for (int j = 0; j < refDim; j++)
         {
             if (elemMaxs(j) < boundingSpace.refMins(j) ||
                 elemMins(j) > boundingSpace.refMaxs(j))
             {
                 return false;
             }
+        }
+
+        // if the element is more than halfway around the globe from the plane, it's probably on the other side of the sphere and doesn't intersect
+        // This is a hack for now, better to just test with original coordinates 
+        VectorX<T> planePoint;
+        boundingSpace.toPhysicalSpace(rot, planePoint);
+        T distanceToPlane = (xyz - planePoint).norm();
+        if (distanceToPlane > R_earth / 2)   
+        {
+            return false;
         }
 
         return true;
@@ -500,7 +558,7 @@ struct CBlock2 : public BlockBase<T>
         {
             EntityHandle vertex = conn[i];
             Range vertexAdjacentCells;
-            rval = mbr->sourceMb->get_adjacencies(&vertex, 1, mbr->cellDim, false, vertexAdjacentCells);
+            rval = mbr->sourceMb->get_adjacencies(&vertex, 1, 2, false, vertexAdjacentCells);
             if (rval != MB_SUCCESS)
             {
                 fmt::print(stderr, "ERROR: Failed to get vertex adjacencies in getElementNeighborsBySharedEdge().\n");
@@ -839,8 +897,8 @@ struct CBlock2 : public BlockBase<T>
         // Build one 3D point per active extruded cell using axial heights:
         // top = ssh - cumulative_thickness; bottom = top - layerThickness.
         int elementID = 0;
-        minSourceDepth = numeric_limits<T>::max();
-        maxSourceDepth = numeric_limits<T>::lowest();
+        minSourceHeight = numeric_limits<T>::max();
+        maxSourceHeight = numeric_limits<T>::lowest();
         sourceHeights.resize(numSourceCells);
         vector<V> centroid(geomDim);
         for (auto it = selectedSourceElements.begin(), end = selectedSourceElements.end(); it != end; ++it, ++elementID)
@@ -916,11 +974,11 @@ struct CBlock2 : public BlockBase<T>
         }
     }
 
-    mfa::AffMap<T> computeTargetPlaneMap()
+    mfa::AffMap<T> computeTargetPlaneMap(const MatrixX<T>& targetPointLocations)
     {
-        VectorX<T> n = mfa::estimateSurfaceNormal<T>(roms_input->domain.leftCols(3));
+        VectorX<T> n = mfa::estimateSurfaceNormal<T>(targetPointLocations);
         auto [a, b] = mfa::getPlaneVectors<T>(n);
-        VectorX<T> center = roms_input->domain.leftCols(3).colwise().mean();
+        VectorX<T> center = targetPointLocations.colwise().mean();
 
         if (verbose >= 2)
         {
@@ -942,10 +1000,6 @@ struct CBlock2 : public BlockBase<T>
                     string  filename)
     {
         const bool decodeAtVertices = false;
-
-        // Dimensionality of each variable (assumed to be scalar)
-        VectorXi modelDims = VectorXi::Ones(varNames.size() + 1); // one model per remapped variable, plus geometry
-        modelDims(0) = geomDim;
 
         mbr->loadTargetMesh(filename);
         mbr->targetVertexBounds(targetMins, targetMaxs);
@@ -984,8 +1038,7 @@ struct CBlock2 : public BlockBase<T>
             }
         }
 
-        planeMap = computeTargetPlaneMap();
-        // targetBoundingSpace = mfa::BoundingSpace<T>(planeMap, roms_input->domain.leftCols(3));
+        planeMap = computeTargetPlaneMap(targetPointLocations);
         targetBoundingSpace = mfa::BoundingSpace<T>(planeMap, targetPointLocations);
     }
 
@@ -994,6 +1047,9 @@ struct CBlock2 : public BlockBase<T>
     {
         int numTargetElements = mbr->targetElements.size();
 
+        // Dimensionality of each variable (assumed to be scalar)
+        VectorXi modelDims = VectorXi::Ones(varNames.size() + 1); // one model per remapped variable, plus geometry
+        modelDims(0) = geomDim;
 
         // Read geometry drivers for extrusion
         Tag sshTag;
@@ -1012,19 +1068,20 @@ struct CBlock2 : public BlockBase<T>
             exit(1);
         }
 
-        vector<T> sshData(numSourceElements);
-        vector<T> bathymetryData(numSourceElements);
-        vector<T> locationData(numSourceElements * locationTagLength);
+        vector<T> sshData(numTargetElements);
+        vector<T> bathymetryData(numTargetElements);
+        vector<T> locationData(numTargetElements * locationTagLength);
         mbr->targetMb->tag_get_data(sshTag, mbr->targetElements, sshData.data());
         mbr->targetMb->tag_get_data(bathymetryTag, mbr->targetElements, bathymetryData.data());
         mbr->targetMb->tag_get_data(locationTag, mbr->targetElements, locationData.data());
 
         int i = 0;
-        minTargetDepth = numeric_limits<T>::max();
-        maxTargetDepth = numeric_limits<T>::lowest();
-        targetHeights.resize(numTargetElements);
+        minTargetHeight = numeric_limits<T>::max();
+        maxTargetHeight = numeric_limits<T>::lowest();
+        targetHeights.resize(numTargetElements * locationTagLength);
         vector<V> coord(geomDim);
         VectorX<T> centroid(geomDim);
+        roms_input = new mfa::PointSet<T>(dom_dim, modelDims, numTargetElements * locationTagLength);
         moab::Range::iterator it = mbr->targetElements.begin();
         moab::Range::iterator end = mbr->targetElements.end();
         for ( ; it != end; ++it, ++i)
@@ -1033,7 +1090,7 @@ struct CBlock2 : public BlockBase<T>
             mbr->targetMb->get_coords(&(*it), 1, coord.data());
             for (int k = 0; k < geomDim; k++)
             {
-                centroid(k) = coord[k];
+                centroid(k) = coord[k] * R_earth;
             }
 
             // Extrude in the normal direction by the depth value at each location
@@ -1041,7 +1098,7 @@ struct CBlock2 : public BlockBase<T>
             {
                 int idx = i * locationTagLength + j;
                 T height = -1 * locationData[idx];
-                roms_input->domain.row(idx).leftCols(geomDim) = centroid + height * centroid.normalized();
+                roms_input->domain.block(idx, 0, 1, geomDim) = (centroid + height * centroid.normalized()).transpose();
                 targetHeights(idx) = height;
             }
 
@@ -1056,25 +1113,23 @@ struct CBlock2 : public BlockBase<T>
             {
                 minTargetHeight = -1 * bathymetryData[i];
             }
-            
-            i++;
         }
     }
 
     void setParameterizations()
     {
-        T minHeight = std::min(minSourceHeight, minTargetHeight);
-        T maxHeight = std::max(maxSourceHeight, maxTargetHeight);
+        minHeight = std::min(minSourceHeight, minTargetHeight);
+        maxHeight = std::max(maxSourceHeight, maxTargetHeight);
 
         MatrixX<T> sourceParams(mpas_input->npts, dom_dim);
         MatrixX<T> targetParams(roms_input->npts, dom_dim);
 
         // parameterization object
-        mfa::AffineMap<T> paramMap(totalBoudingSpace);
+        mfa::AffineMap<T> paramMap(totalBoundingSpace);
 
         // Compute planar parameterization for source data
         // Matri<T> xyz(geomDim);
-        MatrixX<T> param2d();
+        MatrixX<T> param2d;
         MatrixX<T> xyz = mpas_input->domain.leftCols(geomDim);
         paramMap.transform(xyz, param2d, true);
         sourceParams.leftCols(2) = param2d;
@@ -1092,8 +1147,79 @@ struct CBlock2 : public BlockBase<T>
         targetParams.col(2) = (targetHeights.array() - minHeight) / (maxHeight - minHeight);
 
 
-        mpas_input->set_custom_params(sourceParams);
-        roms_input->set_custom_params(targetParams);
+        if (verbose >= 2)
+        {
+            fmt::print(stderr, "Setting source parameters\n");
+        }
+        // // Check for out-of-bounds parameter entries (small roundoff can push values
+        // // slightly outside [0,1]). Report largest violation and clamp to [0,1].
+        // {
+        //     T tol = static_cast<T>(1e-8);
+        //     T maxDev = static_cast<T>(0);
+        //     long maxR = -1, maxC = -1;
+        //     long rows = sourceParams.rows();
+        //     long cols = sourceParams.cols();
+        //     long countViolations = 0;
+        //     for (long r = 0; r < rows; ++r)
+        //     {
+        //         for (long c = 0; c < cols; ++c)
+        //         {
+        //             T v = sourceParams(r, c);
+        //             T dev = static_cast<T>(0);
+        //             if (v < static_cast<T>(0)) dev = -v;
+        //             else if (v > static_cast<T>(1)) dev = v - static_cast<T>(1);
+        //             if (dev > tol) ++countViolations;
+        //             if (dev > maxDev)
+        //             {
+        //                 maxDev = dev;
+        //                 maxR = r; maxC = c;
+        //             }
+        //         }
+        //     }
+        //     if (countViolations > 0)
+        //     {
+        //         fmt::print(stderr, "Warning: sourceParams has {} out-of-bounds entries; maxDev={} at ({},{}) val={}\n",
+        //                    countViolations, maxDev, maxR, maxC, sourceParams(maxR, maxC));
+        //     }
+        //     sourceParams = sourceParams.cwiseMax(static_cast<T>(0)).cwiseMin(static_cast<T>(1));
+        // }
+        mpas_input->set_custom_params_unstructured(sourceParams, 1e-6);
+        
+        if (verbose >= 2)
+        {
+            fmt::print(stderr, "Setting target parameters\n");
+        }
+        // {
+        //     T tol = static_cast<T>(1e-8);
+        //     T maxDev = static_cast<T>(0);
+        //     long maxR = -1, maxC = -1;
+        //     long rows = targetParams.rows();
+        //     long cols = targetParams.cols();
+        //     long countViolations = 0;
+        //     for (long r = 0; r < rows; ++r)
+        //     {
+        //         for (long c = 0; c < cols; ++c)
+        //         {
+        //             T v = targetParams(r, c);
+        //             T dev = static_cast<T>(0);
+        //             if (v < static_cast<T>(0)) dev = -v;
+        //             else if (v > static_cast<T>(1)) dev = v - static_cast<T>(1);
+        //             if (dev > tol) ++countViolations;
+        //             if (dev > maxDev)
+        //             {
+        //                 maxDev = dev;
+        //                 maxR = r; maxC = c;
+        //             }
+        //         }
+        //     }
+        //     if (countViolations > 0)
+        //     {
+        //         fmt::print(stderr, "Warning: targetParams has {} out-of-bounds entries; maxDev={} at ({},{}) val={}\n",
+        //                    countViolations, maxDev, maxR, maxC, targetParams(maxR, maxC));
+        //     }
+            // targetParams = targetParams.cwiseMax(static_cast<T>(0)).cwiseMin(static_cast<T>(1));
+        // }
+        roms_input->set_custom_params_unstructured(targetParams, 1e-6);
 
         // computeBbox();
         // roms_input->set_domain_params(bbox);
@@ -1121,17 +1247,23 @@ struct CBlock2 : public BlockBase<T>
             mfa->dumpCollocationMatrixDecode(0, mpas_approx);
         }
 
-        // Create MFA model from source data
-        for (int l = 0; l < varNames.size(); l++)
-        {
-            mfa->FixedEncodeVar(l, *mpas_input, info.regularization, info.reg1and2, info.weighted);
-        }
+        // // Create MFA model from source data
+        // for (int l = 0; l < varNames.size(); l++)
+        // {
+        //     mfa->FixedEncodeVar(l, *mpas_input, info.regularization, info.reg1and2, info.weighted);
+        // }
+        mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted);
         
-        // Evaluate MFA at target mesh locations
-        for (int l = 0; l < varNames.size(); l++)
-        {
-            mfa->DecodeVar(l, *mpas_approx);
-        }
+        // // Evaluate MFA at target mesh locations
+        // for (int l = 0; l < varNames.size(); l++)
+        // {
+        //     mfa->DecodeVar(l, *mpas_approx);
+        // }
+        mfa->Decode(*mpas_approx);
+        fmt::print(stderr, "Approx npts: {}\n", mpas_approx->npts);
+        fmt::print(stderr, "Approx model dims: {}\n", mfa::print_vec(mpas_approx->model_dims()));
+        fmt::print(stderr, "Approx var 1 min/max: {}/{}\n", mpas_approx->domain.col(geomDim).minCoeff(), mpas_approx->domain.col(geomDim).maxCoeff());
+        fmt::print(stderr, "Approx var 1 has nans: {}\n", mpas_approx->domain.col(geomDim).hasNaN());
 
         // Add remapped values as new tags
         for (int l = 0; l < varNames.size(); l++)
@@ -1147,6 +1279,28 @@ struct CBlock2 : public BlockBase<T>
             mbr->targetMb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
         }
 
+        Tag locationTag;
+        mbr->targetMb->tag_get_handle("ROMS3DLocations", locationTag);
+        int locationTagLength = 0;
+        mbr->targetMb->tag_get_length(locationTag, locationTagLength);
+        fmt::print(stderr, "ROMS3DLocations tag length: {}\n", locationTagLength);
+        fmt::print(stderr, "mpas_approx npts: {}\n", mpas_approx->npts);
+        fmt::print(stderr, "Expected ROMS elements: {}\n", mpas_approx->npts / locationTagLength);
+        fmt::print(stderr, "Actual ROMS elements: {}\n", mbr->targetElements.size());
+
+        for (int l = 0; l < varNames.size(); l++)
+        {
+            Tag remapTag1;
+            string remapTag1Name = varNames[l] + "_remap_1";
+            vector<T> remapData1(mpas_approx->npts / locationTagLength);
+            mbr->targetMb->tag_get_handle(remapTag1Name.c_str(), 1, MB_TYPE_DOUBLE, remapTag1, MB_TAG_DENSE | MB_TAG_CREAT);
+            for (int i = 0; i < mbr->targetElements.size(); i++)
+            {
+                remapData1[i] = mpas_approx->domain(i * locationTagLength, geomDim + l);
+            }
+            mbr->targetMb->tag_set_data(remapTag1, mbr->targetElements, remapData1.data());
+        }
+
         // Move pointers around for visualizing in Paraview
         input = mpas_input;
         mpas_input = nullptr;
@@ -1159,7 +1313,13 @@ struct CBlock2 : public BlockBase<T>
     {
         fmt::print(stderr, "Writing remapped data to vtk...");
         mbr->targetMb->write_mesh("remap_out.vtk", &mbr->targetFileSet, 1);
-        mbr->sourceMb->write_mesh("source_out.vtk", &mbr->sourceFileSet, 1);
+        // mbr->sourceMb->write_mesh("source_out.vtk", &mbr->sourceFileSet, 1);
+
+        EntityHandle sourceSubset;
+        mbr->sourceMb->create_meshset(MESHSET_SET, sourceSubset);
+        mbr->sourceMb->add_entities(sourceSubset, selectedSourceElements);
+        mbr->sourceMb->write_mesh("source_subset.vtk", &sourceSubset, 1);
+
         fmt::print(stderr, "done.\n");
     }
 
@@ -1172,21 +1332,32 @@ struct CBlock2 : public BlockBase<T>
         // Removes some depth levels near ocean floor
         vector<T> depth2 = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170.197, 180.761, 191.821, 203.499, 215.923, 229.233, 243.584, 259.156, 276.152, 294.815, 315.424, 338.312, 363.875, 392.58, 424.989, 461.767, 503.707, 551.749, 606.997, 670.729, 744.398, 829.607, 928.043, 1171.04, 1482.9, 1863.01, 2298.04, 2768.1, 3256.14};
 
-        vector<T> refBottomDepth = depth2;
+        vector<T> refBottomDepth = depth2;        
 
-        auto dom_mins = mpas_input->mins();
-        auto dom_maxs = mpas_input->maxs();
-        vector<T> zknots(refBottomDepth.size());
-        for (int i = 0; i < refBottomDepth.size(); i++)
+        // auto dom_mins = mpas_input->mins();
+        // auto dom_maxs = mpas_input->maxs();
+        // vector<T> zknots(refBottomDepth.size());
+        // for (int i = 0; i < refBottomDepth.size(); i++)
+        // {
+        //     T zk = (-1*refBottomDepth[i] - minHeight) / (maxHeight - minHeight);
+        //     zknots[refBottomDepth.size() - 1 - i] = zk;
+        // }
+        const int numZKnots = 25; // interior knots before padding. TODO: make adaptive to mesh
+        vector<T> zknots(numZKnots);
+        for (int i = 0; i < numZKnots; i++)
         {
-            T zk = (-1*refBottomDepth[i] - dom_mins(2)) / (dom_maxs(2) - dom_mins(2));
-            zknots[refBottomDepth.size() - 1 - i] = zk;
+            zknots[i] = (1.0 / (numZKnots + 1)) * (i + 1); // uniform in [0,1]
         }
+        fmt::print(stderr, "zknots: {}\n", mfa::print_vec(zknots));
 
         vector<vector<T>> allknots(3);
         allknots[0] = mfa->var(0).tmesh.all_knots[0];   // leave unchanged
         allknots[1] = mfa->var(1).tmesh.all_knots[1];   // leave unchanged
         allknots[2] = mfa->pinKnots(zknots, mfa->var(0).p(0));
+        fmt::print(stderr, "knot vector 0: {}\n", mfa::print_vec(allknots[0]));
+        fmt::print(stderr, "knot vector 1: {}\n", mfa::print_vec(allknots[1]));
+        fmt::print(stderr, "knot vector 2: {}\n", mfa::print_vec(allknots[2]));
+
 
         mfa->setKnots(allknots);
     }

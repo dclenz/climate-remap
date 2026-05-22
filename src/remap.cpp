@@ -63,8 +63,8 @@ int main(int argc, char** argv)
     int         verbose         = 1;        // MFA verbosity (0 = no extra output)
     bool        help            = false;    // show help
 
-    const int geom_degree = 1;  // assume flat geometry
-    const int geom_nctrl = -1;  // assume flat geometry
+    int geom_degree = 1;  // assume flat geometry
+    int geom_nctrl = -1;  // assume flat geometry
 
     // Parse command line
     opts::Options ops;
@@ -77,6 +77,8 @@ int main(int argc, char** argv)
     ops >> opts::Option('r', "varNames",    varNames,  " vector of variable names to remap");
     ops >> opts::Option('z' ,"romsfile",    romsfile,  " file path for roms data file");
     ops >> opts::Option('z', "mpasfile",    mpasfile,  " file path for mpas data file");
+    ops >> opts::Option('z', "geom_degree", geom_degree, " degree in each dimension of geometry model");
+    ops >> opts::Option('z', "geom_nctrl",  geom_nctrl,  " number of control points in each dimension of geometry model");
     ops >> opts::Option('x', "verbose",     verbose,    " MFA verbosity (0 = no output, 1 = limited output, 2 = high output)");
     ops >> opts::Option('h', "help",        help,       " show help");
     if (!ops.parse(argc, argv) || help)
@@ -153,8 +155,8 @@ int main(int argc, char** argv)
         b->initMOAB(local, dom_dim);
         b->readTargetData<double>(cp, romsfile);
         // const mfa::Bbox<real_t> sourceReadBbox(b->targetMins, b->targetMaxs);
-        b->readSourceData<double>(cp, mpasfile, sourceReadBbox);
-        b->readTargetDataFull();
+        b->readSourceData<double>(cp, mpasfile);
+        b->readTargetDataFull<double>();
     });
     init_time = MPI_Wtime() - init_time;
 
