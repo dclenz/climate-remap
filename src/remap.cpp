@@ -182,7 +182,10 @@ int main(int argc, char** argv)
     // print results
     fmt::print(stderr, "\n------- Final block results --------\n");
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
-            { b->print_model(cp); });
+    {
+        b->print_model(cp);
+        // b->print_source_modeling_errors();
+    });
     fmt::print(stderr, "startup time          = {:.3} s.\n", init_time);
     fmt::print(stderr, "encoding time         = {:.3} s.\n", encode_time);
     fmt::print(stderr, "-------------------------------------\n\n");

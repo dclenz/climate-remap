@@ -1288,17 +1288,22 @@ struct CBlock2 : public BlockBase<T>
         fmt::print(stderr, "Expected ROMS elements: {}\n", mpas_approx->npts / locationTagLength);
         fmt::print(stderr, "Actual ROMS elements: {}\n", mbr->targetElements.size());
 
-        for (int l = 0; l < varNames.size(); l++)
+        int nLevels = 15;
+        for (int m = 0; m < nLevels; m++)
         {
-            Tag remapTag1;
-            string remapTag1Name = varNames[l] + "_remap_1";
-            vector<T> remapData1(mpas_approx->npts / locationTagLength);
-            mbr->targetMb->tag_get_handle(remapTag1Name.c_str(), 1, MB_TYPE_DOUBLE, remapTag1, MB_TAG_DENSE | MB_TAG_CREAT);
-            for (int i = 0; i < mbr->targetElements.size(); i++)
+            
+            for (int l = 0; l < varNames.size(); l++)
             {
-                remapData1[i] = mpas_approx->domain(i * locationTagLength, geomDim + l);
+                Tag remapTag;
+                string remapTag1Name = varNames[l] + "_remap_" + to_string(m);
+                vector<T> remapData(mpas_approx->npts / locationTagLength);
+                mbr->targetMb->tag_get_handle(remapTag1Name.c_str(), 1, MB_TYPE_DOUBLE, remapTag, MB_TAG_DENSE | MB_TAG_CREAT);
+                for (int i = 0; i < mbr->targetElements.size(); i++)
+                {
+                    remapData[i] = mpas_approx->domain(i * locationTagLength + m, geomDim + l);
+                }
+                mbr->targetMb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
             }
-            mbr->targetMb->tag_set_data(remapTag1, mbr->targetElements, remapData1.data());
         }
 
         // Move pointers around for visualizing in Paraview
@@ -1306,6 +1311,35 @@ struct CBlock2 : public BlockBase<T>
         mpas_input = nullptr;
         approx = mpas_approx;
         mpas_approx = nullptr;
+    }
+
+    void print_source_modeling_errors()
+    {
+        if (errs != nullptr)
+        {
+            cerr << "Warning: Overwriting existing error field in CBlock::print_source_modeling_errors" << endl;
+            delete errs;
+        }
+        errs = new mfa::PointSet<T>(input->params, input->model_dims());
+        input->abs_diff(*approx, *errs);
+
+        // Error summary
+        mfa::Stats<T> stats(false); // false: don't log errors explicitly
+        stats.init(input);
+
+        for (int i = 0; i < input->npts; i++)
+        {
+            for (int l = 0; l < varNames.size(); l++)
+            stats.update(l, errs->domain(i, geomDim + l));
+        }
+
+        fmt::print(stderr, "Source modeling error summary:\n");
+        stats.set_style(mfa::PrintStyle::Side);
+        for (int l = 0; l < varNames.size(); l++)
+        {
+            fmt::print(stderr, "Variable '{}':\n", varNames[l]);
+            stats.print_var(l);
+        }
     }
 
     // Write .mb files as a VTK file for debugging
