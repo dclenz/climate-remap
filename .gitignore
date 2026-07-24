@@ -8,6 +8,12 @@ build-linux-*
 
 **/build
 
+# Runtime outputs
+*.mfa
+*.vtk
+reg-strength-*.txt
+DIY.*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
