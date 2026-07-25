@@ -1352,6 +1352,65 @@ struct CBlock2 : public BlockBase<T>
         EntityHandle sourceSubset;
         mbr->sourceMb->create_meshset(MESHSET_SET, sourceSubset);
         mbr->sourceMb->add_entities(sourceSubset, selectedSourceElements);
+
+        const int nLevels = 15;
+        const vector<string> sourceVarNames = {
+            "timeDaily_avg_activeTracers_temperature_3d",
+            "timeDaily_avg_activeTracers_salinity_3d"
+        };
+        for (const string& varName : sourceVarNames)
+        {
+            Tag sourceTag;
+            ErrorCode rval = mbr->sourceMb->tag_get_handle(varName.c_str(), sourceTag);
+            if (rval != MB_SUCCESS)
+            {
+                fmt::print(stderr, "ERROR: Failed to get source tag '{}'.\n", varName);
+                exit(1);
+            }
+
+            int tagLength = 0;
+            rval = mbr->sourceMb->tag_get_length(sourceTag, tagLength);
+            if (rval != MB_SUCCESS || tagLength < nLevels)
+            {
+                fmt::print(stderr, "ERROR: Source tag '{}' has length {}; expected at least {}.\n",
+                           varName, tagLength, nLevels);
+                exit(1);
+            }
+
+            vector<T> sourceData(selectedSourceElements.size() * tagLength);
+            rval = mbr->sourceMb->tag_get_data(sourceTag, selectedSourceElements, sourceData.data());
+            if (rval != MB_SUCCESS)
+            {
+                fmt::print(stderr, "ERROR: Failed to read source tag '{}'.\n", varName);
+                exit(1);
+            }
+
+            vector<T> levelData(selectedSourceElements.size());
+            for (int level = 0; level < nLevels; level++)
+            {
+                for (size_t i = 0; i < selectedSourceElements.size(); i++)
+                {
+                    levelData[i] = sourceData[i * tagLength + level];
+                }
+
+                Tag levelTag;
+                string levelTagName = varName + "_" + to_string(level);
+                rval = mbr->sourceMb->tag_get_handle(levelTagName.c_str(), 1, MB_TYPE_DOUBLE,
+                                                      levelTag, MB_TAG_DENSE | MB_TAG_CREAT);
+                if (rval != MB_SUCCESS)
+                {
+                    fmt::print(stderr, "ERROR: Failed to create source tag '{}'.\n", levelTagName);
+                    exit(1);
+                }
+                rval = mbr->sourceMb->tag_set_data(levelTag, selectedSourceElements, levelData.data());
+                if (rval != MB_SUCCESS)
+                {
+                    fmt::print(stderr, "ERROR: Failed to set source tag '{}'.\n", levelTagName);
+                    exit(1);
+                }
+            }
+        }
+
         mbr->sourceMb->write_mesh("source_subset.vtk", &sourceSubset, 1);
 
         fmt::print(stderr, "done.\n");
