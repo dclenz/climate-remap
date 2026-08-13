@@ -63,7 +63,9 @@ _mfa_remap_create_env() {
     spack repo add --scope "env:${environment_name}" "${project_root}" || return 1
     spack develop --path "${project_root}" --no-clone \
         'mfa-remap@master build_type=RelWithDebInfo' || return 1
-    spack develop 'mfa@master~examples~tests thread=serial build_type=RelWithDebInfo' || return 1
+    spack undevelop --no-modify-concrete-specs mfa >/dev/null 2>&1 || true
+    spack develop --no-modify-concrete-specs \
+        'mfa@master~examples~tests thread=tbb build_type=RelWithDebInfo' || return 1
 
     # This project owns the environment's root specs. Reset roots left by older
     # versions of this installer without uninstalling packages from Spack.

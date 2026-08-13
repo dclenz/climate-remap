@@ -262,3 +262,59 @@ MFA's sampled normal estimator produced slightly different source selections bet
 - Scripted ParaView plugin checks loaded `roundtrip_mpas.h5m` coverage, eligibility, and representative error components. Coverage ranges from 0 to 1, classes from 0 to 3, and error arrays expose the reported maxima.
 - A code review identified and prompted fixes for exact union coverage, loop-only deterministic plane behavior, stable IDs, finite checks, reverse settings, and reverse serialization.
 - Repeated the authoritative exact-union run after all fixes. Selection counts, coverage classes, eligible-point count, extrema locations, and every reported aggregate metric matched exactly.
+
+## Performance Work
+
+### 2026-08-13 Baseline
+
+The committed serial implementation spent approximately:
+
+- initialization and coverage: `6.25 s`;
+- forward remap and H5M output: `266.67 s`;
+- reverse remap and output: `29.82 s`.
+
+The original timers excluded MFA serialization. Added timers showed that the model artifacts take less than one second each on the canonical machine despite each containing approximately 441 MB of embedded point data. Forward spline decoding, not encoding or I/O, was the dominant cost.
+
+### Implemented Optimizations
+
+- Combined temperature and salinity into one two-component MFA science model in `remap_loop`. MFA previously rebuilt identical collocation matrices, normal matrices, solver setup, knot-span searches, and basis functions for two separate scalar models.
+- Enabled MFA's TBB backend in the managed Spack environment and linked the application to TBB. `MFA_NUM_THREADS` may cap worker parallelism for shared nodes or MPI runs; when unset, TBB uses available cores.
+- Retained serial as the standalone CMake default through the `MFA_THREAD` cache option, while the managed project environment now uses `thread=tbb`.
+- Made `create-env.sh` migrate an existing serial MFA develop spec to TBB before forced concretization.
+- Stopped decoding the geometry spline at known mesh locations. Exact ROMS or MPAS XYZ values are copied into output point sets, while only science variables are spline-decoded. Geometry remains encoded in both serialized MFA artifacts.
+- Cached projected Boost.Geometry target polygons and ROMS profile height extrema during exact coverage classification.
+- Removed repeated copying of the accumulated coverage union.
+- Normalized each ROMS horizontal centroid once per 100-level column rather than once per level.
+- Passed contiguous Eigen science columns directly to MOAB when writing forward profiles, eliminating one full-size copy per field.
+- Added separate encode, science-decode, H5M/output, and MFA-serialization timings.
+
+### Optimized Canonical Result
+
+On the 18-core canonical machine with default TBB concurrency:
+
+- initialization and coverage: `6.11 s`;
+- forward MFA encode: `0.26 s`;
+- forward science decode: `9.06 s`;
+- forward remap and H5M output: `9.47 s`;
+- forward MFA serialization: `0.35 s`;
+- reverse MFA encode: `5.49 s`;
+- reverse science decode: `0.48 s`;
+- reverse remap and output: `6.19 s`;
+- reverse MFA serialization: `0.30 s`.
+
+Measured end-to-end staged time fell from approximately `303 s` to `22.4 s`, about a `13.5x` speedup. Forward time improved by about `28x`, and reverse/output time by about `4.8x`.
+
+With `MFA_NUM_THREADS=4`, forward remap took `41.46 s` and reverse/output took `8.24 s`, demonstrating predictable scaling controls for constrained environments.
+
+The optimized and committed-baseline `roundtrip_metrics.csv` files compare byte-for-byte equal. Coverage classifications, eligibility counts, extrema, H5M array ranges, and pointwise summary metrics are unchanged.
+
+### Remaining Opportunities
+
+- Add a reusable MFA encode plan that caches collocation and normal matrices across compatible variables and repeated time steps.
+- Parallelize MFA's currently serial unstructured collocation assembly if reverse encoding becomes dominant at larger resolutions.
+- Install unstructured parameter matrices by move/in-place construction to remove several full-size matrix copies and reduce peak memory.
+- Replace nested active-cell ID vectors with prefix offsets.
+- Generate MPAS output tags one at a time with a reusable staging buffer to reduce peak memory.
+- Add a metrics-only mode that reverse-decodes only eligible MPAS points, reducing reverse target evaluations by approximately 37%, if full selected-domain visualization is not required.
+- Optionally serialize model-only MFA artifacts with `save_datasets=0`; this would sharply reduce the current 441 MB files but intentionally changes their embedded dataset contents.
+- Investigate basis-support-aware pruning of reverse ROMS training points. This could reduce reverse encoding substantially but changes the regression problem and requires scientific validation.

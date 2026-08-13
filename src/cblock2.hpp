@@ -310,6 +310,7 @@ struct CBlock2 : public BlockBase<T>
     bool addBdryData = true;
     bool writeLegacyRemapTags = true;
     bool useDeterministicTargetPlane = false;
+    bool combineScienceVariables = false;
 
     // Source (MPAS) mesh: ECEF Cartesian in meters. Target (ROMS) mesh:
     // unit sphere. We rescale target coords into MPAS's ECEF frame on read
@@ -801,18 +802,18 @@ struct CBlock2 : public BlockBase<T>
         }
 
         vector<Polygon2> targetPolygons;
-        vector<EntityHandle> targetHandles;
+        vector<BoostPolygon2> boostTargetPolygons;
         targetPolygons.reserve(targetCount);
-        targetHandles.reserve(targetCount);
+        boostTargetPolygons.reserve(targetCount);
         T gridMinX = numeric_limits<T>::max();
         T gridMaxX = numeric_limits<T>::lowest();
         T gridMinY = numeric_limits<T>::max();
         T gridMaxY = numeric_limits<T>::lowest();
         for (EntityHandle element : mbr->targetElements)
         {
-            targetHandles.push_back(element);
             targetPolygons.push_back(projectedElement(mbr->targetMb, element, R_earth));
             const Polygon2& polygon = targetPolygons.back();
+            boostTargetPolygons.push_back(toBoostPolygon(polygon.points));
             gridMinX = std::min(gridMinX, polygon.minX);
             gridMaxX = std::max(gridMaxX, polygon.maxX);
             gridMinY = std::min(gridMinY, polygon.minY);
@@ -840,6 +841,21 @@ struct CBlock2 : public BlockBase<T>
             for (int j = minJ; j <= maxJ; j++)
                 for (int i = minI; i <= maxI; i++)
                     bins[j * gridSize + i].push_back(targetIdx);
+        }
+
+        const int profileLength = targetHeights.size() / targetCount;
+        vector<T> targetProfileMins(targetCount, numeric_limits<T>::max());
+        vector<T> targetProfileMaxs(targetCount, numeric_limits<T>::lowest());
+        for (int targetIdx = 0; targetIdx < targetCount; targetIdx++)
+        {
+            const int firstPoint = targetIdx * profileLength;
+            for (int level = 0; level < profileLength; level++)
+            {
+                targetProfileMins[targetIdx] = std::min(targetProfileMins[targetIdx],
+                                                        targetHeights(firstPoint + level));
+                targetProfileMaxs[targetIdx] = std::max(targetProfileMaxs[targetIdx],
+                                                        targetHeights(firstPoint + level));
+            }
         }
 
         sourceCoverageFractions.assign(numSourceElements, 0);
@@ -898,7 +914,7 @@ struct CBlock2 : public BlockBase<T>
 
                 vector<BoostPolygon2> intersections;
                 boost::geometry::intersection(boostSourcePolygon,
-                                              toBoostPolygon(targetPolygon.points),
+                                              boostTargetPolygons[targetIdx],
                                               intersections);
                 T intersectionArea = 0;
                 for (const BoostPolygon2& intersection : intersections)
@@ -906,7 +922,6 @@ struct CBlock2 : public BlockBase<T>
                 if (intersectionArea <= sourceArea * static_cast<T>(1e-12))
                     continue;
 
-                BoostMultiPolygon2 nextCoveredRegion;
                 if (coveredRegion.empty())
                 {
                     for (const BoostPolygon2& intersection : intersections)
@@ -921,22 +936,11 @@ struct CBlock2 : public BlockBase<T>
                         boost::geometry::difference(intersection, coveredRegion, difference);
                         additions.insert(additions.end(), difference.begin(), difference.end());
                     }
-                    nextCoveredRegion = coveredRegion;
-                    nextCoveredRegion.insert(nextCoveredRegion.end(), additions.begin(), additions.end());
-                    coveredRegion = std::move(nextCoveredRegion);
+                    coveredRegion.insert(coveredRegion.end(), additions.begin(), additions.end());
                 }
                 hasPositiveOverlap = true;
-                const int firstPoint = targetIdx * (targetHeights.size() / targetCount);
-                const int profileLength = targetHeights.size() / targetCount;
-                T profileMin = numeric_limits<T>::max();
-                T profileMax = numeric_limits<T>::lowest();
-                for (int level = 0; level < profileLength; level++)
-                {
-                    profileMin = std::min(profileMin, targetHeights(firstPoint + level));
-                    profileMax = std::max(profileMax, targetHeights(firstPoint + level));
-                }
-                supportedMinHeight = std::max(supportedMinHeight, profileMin);
-                supportedMaxHeight = std::min(supportedMaxHeight, profileMax);
+                supportedMinHeight = std::max(supportedMinHeight, targetProfileMins[targetIdx]);
+                supportedMaxHeight = std::min(supportedMaxHeight, targetProfileMaxs[targetIdx]);
             }
 
             T coveredArea = 0;
@@ -1166,8 +1170,11 @@ struct CBlock2 : public BlockBase<T>
         computeSourceCellInfo();
 
         // Set up MFA PointSet
-        VectorXi modelDims = VectorXi::Ones(varNames.size() + 1); // one model per remapped variable, plus geometry
+        VectorXi modelDims = combineScienceVariables ? VectorXi(2) :
+                                                        VectorXi::Ones(varNames.size() + 1);
         modelDims(0) = 3; // points are 3D
+        if (combineScienceVariables)
+            modelDims(1) = varNames.size();
 
         // model_dims << geomDim, 1, 1;          // geometry, salinity, temperature
         mpas_input = new mfa::PointSet<T>(dom_dim, modelDims, numSourceCells);
@@ -1351,9 +1358,11 @@ struct CBlock2 : public BlockBase<T>
     {
         int numTargetElements = mbr->targetElements.size();
 
-        // Dimensionality of each variable (assumed to be scalar)
-        VectorXi modelDims = VectorXi::Ones(varNames.size() + 1); // one model per remapped variable, plus geometry
+        VectorXi modelDims = combineScienceVariables ? VectorXi(2) :
+                                                        VectorXi::Ones(varNames.size() + 1);
         modelDims(0) = geomDim;
+        if (combineScienceVariables)
+            modelDims(1) = varNames.size();
 
         // Read geometry drivers for extrusion
         Tag sshTag;
@@ -1398,11 +1407,12 @@ struct CBlock2 : public BlockBase<T>
             }
 
             // Extrude in the normal direction by the depth value at each location
+            const VectorX<T> normal = centroid.normalized();
             for (int j = 0; j < locationTagLength; j++)
             {
                 int idx = i * locationTagLength + j;
                 T height = -1 * locationData[idx];
-                roms_input->domain.block(idx, 0, 1, geomDim) = (centroid + height * centroid.normalized()).transpose();
+                roms_input->domain.block(idx, 0, 1, geomDim) = (centroid + height * normal).transpose();
                 targetHeights(idx) = height;
             }
 
@@ -1556,14 +1566,20 @@ struct CBlock2 : public BlockBase<T>
         // {
         //     mfa->FixedEncodeVar(l, *mpas_input, info.regularization, info.reg1and2, info.weighted);
         // }
+        const double encodeStart = MPI_Wtime();
         mfa->FixedEncode(*mpas_input, info.regularization, info.reg1and2, info.weighted);
+        fmt::print(stderr, "Forward MFA encode time: {:.3f} s\n", MPI_Wtime() - encodeStart);
         
         // // Evaluate MFA at target mesh locations
         // for (int l = 0; l < varNames.size(); l++)
         // {
         //     mfa->DecodeVar(l, *mpas_approx);
         // }
-        mfa->Decode(*mpas_approx);
+        mpas_approx->domain.leftCols(geomDim) = roms_input->domain.leftCols(geomDim);
+        const double decodeStart = MPI_Wtime();
+        for (int varIdx = 0; varIdx < mfa->nvars(); varIdx++)
+            mfa->DecodeVar(varIdx, *mpas_approx);
+        fmt::print(stderr, "Forward MFA science decode time: {:.3f} s\n", MPI_Wtime() - decodeStart);
         fmt::print(stderr, "Approx npts: {}\n", mpas_approx->npts);
         fmt::print(stderr, "Approx model dims: {}\n", mfa::print_vec(mpas_approx->model_dims()));
         fmt::print(stderr, "Approx var 1 min/max: {}/{}\n", mpas_approx->domain.col(geomDim).minCoeff(), mpas_approx->domain.col(geomDim).maxCoeff());
@@ -1700,17 +1716,16 @@ struct CBlock2 : public BlockBase<T>
         for (int varIdx = 0; varIdx < varNames.size(); varIdx++)
         {
             const string tagName = varNames[varIdx] + "_forward_remap";
-            vector<T> profileData(expectedPoints);
+            const T* profileData = approx->domain.col(geomDim + varIdx).data();
             for (size_t pointIdx = 0; pointIdx < expectedPoints; pointIdx++)
             {
-                const T value = approx->domain(pointIdx, geomDim + varIdx);
+                const T value = profileData[pointIdx];
                 if (!std::isfinite(value))
                 {
                     fmt::print(stderr, "ERROR: Non-finite value in '{}' at decoded point {}.\n",
                                tagName, pointIdx);
                     exit(1);
                 }
-                profileData[pointIdx] = value;
             }
 
             Tag profileTag;
@@ -1723,7 +1738,7 @@ struct CBlock2 : public BlockBase<T>
                 exit(1);
             }
             rval = mbr->targetMb->tag_set_data(profileTag, mbr->targetElements,
-                                                profileData.data());
+                                                profileData);
             if (rval != MB_SUCCESS)
             {
                 fmt::print(stderr, "ERROR: Failed to populate profile tag '{}'.\n", tagName);
@@ -2172,11 +2187,17 @@ struct CBlock2 : public BlockBase<T>
         reverse_mfa = new mfa::MFA<T>(info);
         setReverse3DKnots();
 
+        const double encodeStart = MPI_Wtime();
         reverse_mfa->FixedEncode(*approx, info.regularization, info.reg1and2, info.weighted);
+        fmt::print(stderr, "Reverse MFA encode time: {:.3f} s\n", MPI_Wtime() - encodeStart);
 
         delete roundtrip_approx;
         roundtrip_approx = new mfa::PointSet<T>(input->params, input->model_dims());
-        reverse_mfa->Decode(*roundtrip_approx);
+        roundtrip_approx->domain.leftCols(geomDim) = input->domain.leftCols(geomDim);
+        const double decodeStart = MPI_Wtime();
+        for (int varIdx = 0; varIdx < reverse_mfa->nvars(); varIdx++)
+            reverse_mfa->DecodeVar(varIdx, *roundtrip_approx);
+        fmt::print(stderr, "Reverse MFA science decode time: {:.3f} s\n", MPI_Wtime() - decodeStart);
 
         if (roundtrip_approx->npts != input->npts)
         {

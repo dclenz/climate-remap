@@ -4,9 +4,15 @@
 
 #include <mfa/mfa.hpp>
 
+#include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
+
+#ifdef MFA_TBB
+#include <tbb/global_control.h>
+#endif
 
 #include <diy/assigner.hpp>
 #include <diy/decomposition.hpp>
@@ -21,6 +27,21 @@ using B = CBlock2<real_t>;
 
 int main(int argc, char** argv)
 {
+#ifdef MFA_TBB
+    unique_ptr<tbb::global_control> threadControl;
+    if (const char* value = std::getenv("MFA_NUM_THREADS"))
+    {
+        const int threadCount = std::stoi(value);
+        if (threadCount <= 0)
+        {
+            fmt::print(stderr, "ERROR: MFA_NUM_THREADS must be positive.\n");
+            return 1;
+        }
+        threadControl = make_unique<tbb::global_control>(
+            tbb::global_control::max_allowed_parallelism, threadCount);
+    }
+#endif
+
     diy::mpi::environment env(argc, argv);
     diy::mpi::communicator world;
     MPI_Comm local;
@@ -103,8 +124,7 @@ int main(int argc, char** argv)
 
     const int geom_dim = 3;
     const int pt_dim = geom_dim + varNames.size();
-    vector<int> model_dims(varNames.size() + 1, 1);
-    model_dims[0] = geom_dim;
+    vector<int> model_dims = {geom_dim, static_cast<int>(varNames.size())};
 
     fmt::print(stderr, "--------- Round-Trip MFA Settings ----------\n");
     fmt::print(stderr, "Forward controls: {}\n", mfa::print_vec(vars_nctrl));
@@ -145,6 +165,7 @@ int main(int argc, char** argv)
         b->varNames = varNames;
         b->writeLegacyRemapTags = false;
         b->useDeterministicTargetPlane = true;
+        b->combineScienceVariables = true;
         b->initMOAB(local, dom_dim);
         b->readTargetData<double>(cp, romsfile);
         b->readSourceData<double>(cp, mpasfile);
@@ -162,7 +183,9 @@ int main(int argc, char** argv)
     });
     forward_time = MPI_Wtime() - forward_time;
 
+    double forward_serialization_time = MPI_Wtime();
     diy::io::write_blocks("forward_remap.mfa", world, master);
+    forward_serialization_time = MPI_Wtime() - forward_serialization_time;
 
     double reverse_time = MPI_Wtime();
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
@@ -178,10 +201,14 @@ int main(int argc, char** argv)
         (void)cp;
         b->activateReverseMFAForSerialization();
     });
+    double reverse_serialization_time = MPI_Wtime();
     diy::io::write_blocks("reverse_remap.mfa", world, master);
+    reverse_serialization_time = MPI_Wtime() - reverse_serialization_time;
 
     fmt::print(stderr, "Initialization time: {:.3f} s\n", init_time);
-    fmt::print(stderr, "Forward remap time: {:.3f} s\n", forward_time);
-    fmt::print(stderr, "Reverse remap time: {:.3f} s\n", reverse_time);
+    fmt::print(stderr, "Forward remap and H5M time: {:.3f} s\n", forward_time);
+    fmt::print(stderr, "Forward MFA serialization time: {:.3f} s\n", forward_serialization_time);
+    fmt::print(stderr, "Reverse remap and output time: {:.3f} s\n", reverse_time);
+    fmt::print(stderr, "Reverse MFA serialization time: {:.3f} s\n", reverse_serialization_time);
     return 0;
 }

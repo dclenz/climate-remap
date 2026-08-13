@@ -22,7 +22,7 @@ class MfaRemap(CMakePackage):
         values=("Debug", "Release", "RelWithDebInfo", "MinSizeRel"),
     )
 
-    depends_on("mfa@master~examples~tests thread=serial", type=("build", "link"))
+    depends_on("mfa@master~examples~tests thread=tbb", type=("build", "link"))
     depends_on("mpi", type=("build", "link"))
     depends_on("hdf5@1.14+mpi+hl", type=("build", "link"))
     depends_on("highfive+mpi", type=("build", "link"))
@@ -40,6 +40,7 @@ class MfaRemap(CMakePackage):
             self.define("CMAKE_CXX_COMPILER", self.spec["mpi"].mpicxx),
             self.define("MFA_PATH", self.spec["mfa"].prefix),
             self.define("HIGHFIVE_PATH", self.spec["highfive"].prefix),
+            self.define("MFA_THREAD", self.spec["mfa"].variants["thread"].value),
             self.define("BUILD_SHARED_LIBS", False),
         ]
 
