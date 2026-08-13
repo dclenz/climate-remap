@@ -1,5 +1,13 @@
 #!/bin/bash
 
+set -e
+
+# Alectrona Patch installs an incompatible /usr/local/bin/patch that shadows
+# the POSIX patch utility Spack needs when applying package patches on macOS.
+if [ "$(uname -s)" = "Darwin" ]; then
+    export PATH="/usr/bin:$PATH"
+fi
+
 export SPACKENV=mfa-remap-env
 export YAML=$PWD/env.yaml
 
