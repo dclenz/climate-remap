@@ -58,8 +58,8 @@ int main(int argc, char** argv)
         "timeDaily_avg_activeTracers_temperature_3d",
         "timeDaily_avg_activeTracers_salinity_3d"
     };
-    real_t regularization = 0;
-    real_t reverse_regularization = 0;
+    real_t regularization = 1;
+    real_t reverse_regularization = 1;
     int reg1and2 = 0;
     int reverse_reg1and2 = 0;
     int verbose = 1;
