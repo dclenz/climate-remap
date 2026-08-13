@@ -8,6 +8,7 @@
 #ifndef _MFA_CBLOCK
 #define _MFA_CBLOCK
 
+#include    <algorithm>
 #include    <random>
 #include    <stdio.h>
 #include    <cmath>
@@ -330,6 +331,7 @@ struct CBlock2 : public BlockBase<T>
     
     VectorX<T> sourceHeights;   // sourceHeights[i] is the height of mpas_input->domain(i, 2) relative to average sea height. Positive is above sea level.
     VectorX<T> targetHeights;
+    vector<T> sourceLevelMeanHeights;
 
     T minHeight;
     T maxHeight;
@@ -900,6 +902,8 @@ struct CBlock2 : public BlockBase<T>
         minSourceHeight = numeric_limits<T>::max();
         maxSourceHeight = numeric_limits<T>::lowest();
         sourceHeights.resize(numSourceCells);
+        vector<T> sourceLevelHeightSums(maxLevel, 0.0);
+        vector<int> sourceLevelHeightCounts(maxLevel, 0);
         vector<V> centroid(geomDim);
         for (auto it = selectedSourceElements.begin(), end = selectedSourceElements.end(); it != end; ++it, ++elementID)
         {
@@ -953,6 +957,8 @@ struct CBlock2 : public BlockBase<T>
 
                 // Set point height for later use in calculating parameterizations
                 sourceHeights(cellID) = axialCentroid;
+                sourceLevelHeightSums[level] += axialCentroid;
+                sourceLevelHeightCounts[level]++;
 
                 cumulativeThickness += layerThickness;
             }
@@ -964,6 +970,17 @@ struct CBlock2 : public BlockBase<T>
             if (-1 * cumulativeThickness < minSourceHeight)
             {
                 minSourceHeight = -1 * cumulativeThickness;
+            }
+        }
+
+        sourceLevelMeanHeights.clear();
+        sourceLevelMeanHeights.reserve(maxLevel);
+        for (int level = 0; level < maxLevel; level++)
+        {
+            if (sourceLevelHeightCounts[level] > 0)
+            {
+                sourceLevelMeanHeights.push_back(sourceLevelHeightSums[level] /
+                                                 sourceLevelHeightCounts[level]);
             }
         }
 
@@ -1288,17 +1305,22 @@ struct CBlock2 : public BlockBase<T>
         fmt::print(stderr, "Expected ROMS elements: {}\n", mpas_approx->npts / locationTagLength);
         fmt::print(stderr, "Actual ROMS elements: {}\n", mbr->targetElements.size());
 
-        for (int l = 0; l < varNames.size(); l++)
+        int nLevels = 15;
+        for (int m = 0; m < nLevels; m++)
         {
-            Tag remapTag1;
-            string remapTag1Name = varNames[l] + "_remap_1";
-            vector<T> remapData1(mpas_approx->npts / locationTagLength);
-            mbr->targetMb->tag_get_handle(remapTag1Name.c_str(), 1, MB_TYPE_DOUBLE, remapTag1, MB_TAG_DENSE | MB_TAG_CREAT);
-            for (int i = 0; i < mbr->targetElements.size(); i++)
+
+            for (int l = 0; l < varNames.size(); l++)
             {
-                remapData1[i] = mpas_approx->domain(i * locationTagLength, geomDim + l);
+                Tag remapTag;
+                string remapTag1Name = varNames[l] + "_remap_" + to_string(m);
+                vector<T> remapData(mpas_approx->npts / locationTagLength);
+                mbr->targetMb->tag_get_handle(remapTag1Name.c_str(), 1, MB_TYPE_DOUBLE, remapTag, MB_TAG_DENSE | MB_TAG_CREAT);
+                for (int i = 0; i < mbr->targetElements.size(); i++)
+                {
+                    remapData[i] = mpas_approx->domain(i * locationTagLength + m, geomDim + l);
+                }
+                mbr->targetMb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
             }
-            mbr->targetMb->tag_set_data(remapTag1, mbr->targetElements, remapData1.data());
         }
 
         // Move pointers around for visualizing in Paraview
@@ -1306,6 +1328,35 @@ struct CBlock2 : public BlockBase<T>
         mpas_input = nullptr;
         approx = mpas_approx;
         mpas_approx = nullptr;
+    }
+
+    void print_source_modeling_errors()
+    {
+        if (errs != nullptr)
+        {
+            cerr << "Warning: Overwriting existing error field in CBlock::print_source_modeling_errors" << endl;
+            delete errs;
+        }
+        errs = new mfa::PointSet<T>(input->params, input->model_dims());
+        input->abs_diff(*approx, *errs);
+
+        // Error summary
+        mfa::Stats<T> stats(false); // false: don't log errors explicitly
+        stats.init(input);
+
+        for (int i = 0; i < input->npts; i++)
+        {
+            for (int l = 0; l < varNames.size(); l++)
+            stats.update(l, errs->domain(i, geomDim + l));
+        }
+
+        fmt::print(stderr, "Source modeling error summary:\n");
+        stats.set_style(mfa::PrintStyle::Side);
+        for (int l = 0; l < varNames.size(); l++)
+        {
+            fmt::print(stderr, "Variable '{}':\n", varNames[l]);
+            stats.print_var(l);
+        }
     }
 
     // Write .mb files as a VTK file for debugging
@@ -1318,46 +1369,122 @@ struct CBlock2 : public BlockBase<T>
         EntityHandle sourceSubset;
         mbr->sourceMb->create_meshset(MESHSET_SET, sourceSubset);
         mbr->sourceMb->add_entities(sourceSubset, selectedSourceElements);
+
+        const int nLevels = 15;
+        const vector<string> sourceVarNames = {
+            "timeDaily_avg_activeTracers_temperature_3d",
+            "timeDaily_avg_activeTracers_salinity_3d"
+        };
+        for (const string& varName : sourceVarNames)
+        {
+            Tag sourceTag;
+            ErrorCode rval = mbr->sourceMb->tag_get_handle(varName.c_str(), sourceTag);
+            if (rval != MB_SUCCESS)
+            {
+                fmt::print(stderr, "ERROR: Failed to get source tag '{}'.\n", varName);
+                exit(1);
+            }
+
+            int tagLength = 0;
+            rval = mbr->sourceMb->tag_get_length(sourceTag, tagLength);
+            if (rval != MB_SUCCESS || tagLength < nLevels)
+            {
+                fmt::print(stderr, "ERROR: Source tag '{}' has length {}; expected at least {}.\n",
+                           varName, tagLength, nLevels);
+                exit(1);
+            }
+
+            vector<T> sourceData(selectedSourceElements.size() * tagLength);
+            rval = mbr->sourceMb->tag_get_data(sourceTag, selectedSourceElements, sourceData.data());
+            if (rval != MB_SUCCESS)
+            {
+                fmt::print(stderr, "ERROR: Failed to read source tag '{}'.\n", varName);
+                exit(1);
+            }
+
+            vector<T> levelData(selectedSourceElements.size());
+            for (int level = 0; level < nLevels; level++)
+            {
+                for (size_t i = 0; i < selectedSourceElements.size(); i++)
+                {
+                    levelData[i] = sourceData[i * tagLength + level];
+                }
+
+                Tag levelTag;
+                string levelTagName = varName + "_" + to_string(level);
+                rval = mbr->sourceMb->tag_get_handle(levelTagName.c_str(), 1, MB_TYPE_DOUBLE,
+                                                      levelTag, MB_TAG_DENSE | MB_TAG_CREAT);
+                if (rval != MB_SUCCESS)
+                {
+                    fmt::print(stderr, "ERROR: Failed to create source tag '{}'.\n", levelTagName);
+                    exit(1);
+                }
+                rval = mbr->sourceMb->tag_set_data(levelTag, selectedSourceElements, levelData.data());
+                if (rval != MB_SUCCESS)
+                {
+                    fmt::print(stderr, "ERROR: Failed to set source tag '{}'.\n", levelTagName);
+                    exit(1);
+                }
+            }
+        }
+
         mbr->sourceMb->write_mesh("source_subset.vtk", &sourceSubset, 1);
 
         fmt::print(stderr, "done.\n");
     }
 
-    // Set custom knots based on depth levels in 3D
+    // Set the vertical knot density from the spacing of representative MPAS levels.
     void set3DKnots()
     {
-        // All depth levels
-        vector<T> depth1 = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170.197, 180.761, 191.821, 203.499, 215.923, 229.233, 243.584, 259.156, 276.152, 294.815, 315.424, 338.312, 363.875, 392.58, 424.989, 461.767, 503.707, 551.749, 606.997, 670.729, 744.398, 829.607, 928.043, 1041.37, 1171.04, 1318.09, 1482.9, 1664.99, 1863.01, 2074.87, 2298.04, 2529.9, 2768.1, 3010.67, 3256.14};
-
-        // Removes some depth levels near ocean floor
-        vector<T> depth2 = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170.197, 180.761, 191.821, 203.499, 215.923, 229.233, 243.584, 259.156, 276.152, 294.815, 315.424, 338.312, 363.875, 392.58, 424.989, 461.767, 503.707, 551.749, 606.997, 670.729, 744.398, 829.607, 928.043, 1171.04, 1482.9, 1863.01, 2298.04, 2768.1, 3256.14};
-
-        vector<T> refBottomDepth = depth2;        
-
-        // auto dom_mins = mpas_input->mins();
-        // auto dom_maxs = mpas_input->maxs();
-        // vector<T> zknots(refBottomDepth.size());
-        // for (int i = 0; i < refBottomDepth.size(); i++)
-        // {
-        //     T zk = (-1*refBottomDepth[i] - minHeight) / (maxHeight - minHeight);
-        //     zknots[refBottomDepth.size() - 1 - i] = zk;
-        // }
-        const int numZKnots = 25; // interior knots before padding. TODO: make adaptive to mesh
-        vector<T> zknots(numZKnots);
-        for (int i = 0; i < numZKnots; i++)
+        if (sourceLevelMeanHeights.size() < 2)
         {
-            zknots[i] = (1.0 / (numZKnots + 1)) * (i + 1); // uniform in [0,1]
+            fmt::print(stderr, "ERROR: Need at least two MPAS vertical levels to set adaptive knots.\n");
+            exit(1);
         }
-        fmt::print(stderr, "zknots: {}\n", mfa::print_vec(zknots));
 
-        vector<vector<T>> allknots(3);
-        allknots[0] = mfa->var(0).tmesh.all_knots[0];   // leave unchanged
-        allknots[1] = mfa->var(1).tmesh.all_knots[1];   // leave unchanged
-        allknots[2] = mfa->pinKnots(zknots, mfa->var(0).p(0));
-        fmt::print(stderr, "knot vector 0: {}\n", mfa::print_vec(allknots[0]));
-        fmt::print(stderr, "knot vector 1: {}\n", mfa::print_vec(allknots[1]));
-        fmt::print(stderr, "knot vector 2: {}\n", mfa::print_vec(allknots[2]));
+        const int verticalDim = 2;
+        const int degree = mfa->var(0).p(verticalDim);
+        const int nctrl = mfa->var(0).tmesh.tensor_prods[0].nctrl_pts(verticalDim);
+        const int numInteriorKnots = nctrl - degree - 1;
+        if (numInteriorKnots < 0)
+        {
+            fmt::print(stderr, "ERROR: Invalid vertical model: nctrl={} degree={}.\n", nctrl, degree);
+            exit(1);
+        }
 
+        vector<T> levelParams;
+        levelParams.reserve(sourceLevelMeanHeights.size());
+        for (T height : sourceLevelMeanHeights)
+        {
+            T param = (height - minHeight) / (maxHeight - minHeight);
+            levelParams.push_back(std::max(static_cast<T>(0), std::min(static_cast<T>(1), param)));
+        }
+        std::sort(levelParams.begin(), levelParams.end());
+
+        vector<T> zknots(numInteriorKnots);
+        for (int i = 0; i < numInteriorKnots; i++)
+        {
+            T position = static_cast<T>(i + 1) * (levelParams.size() - 1) /
+                         static_cast<T>(numInteriorKnots + 1);
+            size_t lower = static_cast<size_t>(std::floor(position));
+            size_t upper = std::min(lower + 1, levelParams.size() - 1);
+            T fraction = position - lower;
+            zknots[i] = levelParams[lower] + fraction * (levelParams[upper] - levelParams[lower]);
+        }
+
+        vector<vector<T>> allknots(dom_dim);
+        for (int dim = 0; dim < dom_dim; dim++)
+        {
+            allknots[dim] = mfa->var(0).tmesh.all_knots[dim];
+        }
+        if (!zknots.empty())
+        {
+            allknots[verticalDim] = mfa->pinKnots(zknots, degree);
+        }
+
+        fmt::print(stderr, "MPAS mean vertical level parameters: {}\n", mfa::print_vec(levelParams));
+        fmt::print(stderr, "Adaptive vertical interior knots: {}\n", mfa::print_vec(zknots));
+        fmt::print(stderr, "Vertical knot vector: {}\n", mfa::print_vec(allknots[verticalDim]));
 
         mfa->setKnots(allknots);
     }

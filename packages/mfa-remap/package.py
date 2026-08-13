@@ -6,27 +6,39 @@
 from spack_repo.builtin.build_systems.cmake import CMakePackage
 from spack.package import *
 
+
 class MfaRemap(CMakePackage):
-    """Example of remapping two simulations with MFA"""
+    """Remap climate data with multivariate functional approximation."""
 
     homepage = "https://github.com/dclenz/climate-remap"
-    url      = "https://github.com/dclenz/climate-remap"
-    git      = "https://github.com/dclenz/climate-remap.git"
+    git = "https://github.com/dclenz/climate-remap.git"
 
-    version('master', branch='master')
+    version("master", branch="master")
 
-    variant('build_type', default='RelWithDebInfo', description='CMake build type', values=('Debug', 'Release', 'RelWithDebInfo', 'MinSizeRel'))
+    variant(
+        "build_type",
+        default="RelWithDebInfo",
+        description="CMake build type",
+        values=("Debug", "Release", "RelWithDebInfo", "MinSizeRel"),
+    )
 
-    depends_on('mfa~examples~tests')
-    depends_on('mpich')
-    depends_on('hdf5+mpi+hl', type='link')
-    depends_on('highfive')
-    depends_on('henson@master+python+mpi-wrappers')
+    depends_on("mfa@master~examples~tests thread=serial", type=("build", "link"))
+    depends_on("mpi", type=("build", "link"))
+    depends_on("hdf5@1.14+mpi+hl", type=("build", "link"))
+    depends_on("highfive+mpi", type=("build", "link"))
+    depends_on("henson@master+python+mpi-wrappers", type=("build", "link"))
+    depends_on(
+        "moab@5.5.0~cgm~coupler~dagmc~debug~fbigeom~fortran+hdf5~irel"
+        "~metis+mpi~netcdf~parmetis~pnetcdf~shared~zoltan",
+        type=("build", "link"),
+    )
 
     def cmake_args(self):
-        args = ['-DCMAKE_BUILD_TYPE=%s' % self.spec.variants['build_type'].value,
-                '-DCMAKE_C_COMPILER=%s' % self.spec['mpich'].mpicc,
-                '-DCMAKE_CXX_COMPILER=%s' % self.spec['mpich'].mpicxx,
-                '-DBUILD_SHARED_LIBS=false']
-        return args
+        return [
+            self.define("CMAKE_C_COMPILER", self.spec["mpi"].mpicc),
+            self.define("CMAKE_CXX_COMPILER", self.spec["mpi"].mpicxx),
+            self.define("MFA_PATH", self.spec["mfa"].prefix),
+            self.define("HIGHFIVE_PATH", self.spec["highfive"].prefix),
+            self.define("BUILD_SHARED_LIBS", False),
+        ]
 

@@ -1,12 +1,20 @@
 data/*
 .vscode/
+.DS_Store
 
 # Spack build objects
 spack-build-*
 spack-configure-*
 build-linux-*
+build-darwin-*
 
 **/build
+
+# Runtime outputs
+*.mfa
+*.vtk
+reg-strength-*.txt
+DIY.*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

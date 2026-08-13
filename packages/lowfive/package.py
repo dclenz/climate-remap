@@ -21,16 +21,16 @@ class Lowfive(CMakePackage):
     variant("auto_load", default=True, description="Set LowFive environment variables")
     variant("python", default=True, description="Install Python bindings")
 
-    depends_on('mpich')
-    depends_on('hdf5+mpi+hl', type='link')
+    depends_on("mpi", type=("build", "link"))
+    depends_on("hdf5+mpi+hl", type=("build", "link"))
 
     extends("python", when="+python")       # brings pylowfive into PYTHONPATH
     depends_on("py-mpi4py", when="+python", type=("build", "run"))
 
     def cmake_args(self):
-        args = ['-DCMAKE_C_COMPILER=%s' % self.spec['mpi'].mpicc,
-                '-DCMAKE_CXX_COMPILER=%s' % self.spec['mpi'].mpicxx,
-                '-DBUILD_SHARED_LIBS=false',
+        args = [self.define("CMAKE_C_COMPILER", self.spec["mpi"].mpicc),
+                self.define("CMAKE_CXX_COMPILER", self.spec["mpi"].mpicxx),
+                self.define("BUILD_SHARED_LIBS", False),
                 self.define_from_variant('lowfive_install_examples', 'examples'),
                 self.define_from_variant('lowfive_python', 'python'),
         ]
