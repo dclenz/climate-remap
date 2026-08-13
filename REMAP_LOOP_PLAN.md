@@ -318,3 +318,19 @@ The optimized and committed-baseline `roundtrip_metrics.csv` files compare byte-
 - Add a metrics-only mode that reverse-decodes only eligible MPAS points, reducing reverse target evaluations by approximately 37%, if full selected-domain visualization is not required.
 - Optionally serialize model-only MFA artifacts with `save_datasets=0`; this would sharply reduce the current 441 MB files but intentionally changes their embedded dataset contents.
 - Investigate basis-support-aware pruning of reverse ROMS training points. This could reduce reverse encoding substantially but changes the regression problem and requires scientific validation.
+
+## Cleanup Work
+
+### 2026-08-13 First Refactor Increment
+
+- Reorganized `remap_loop.cpp` around a `RoundTripOptions` configuration structure and focused helpers for option registration, validation, MFA construction, and TBB thread limits. The main function now exposes the workflow stages directly.
+- Added controlled validation for malformed `MFA_NUM_THREADS` values.
+- Added `CBlock2::configureForRoundTrip()` so loop-mode compatibility settings are selected as one explicit operation rather than three independent public assignments.
+- Centralized point-set model-dimension construction for source and target data.
+- Replaced coverage magic integers with a named internal `CoverageClass` enum while preserving H5M values `0..3`.
+- Centralized round-trip coverage and eligibility tag names and extracted their MOAB writes into focused helpers.
+- Added scalar `roundtrip_error_cell_eligible`, equal to `1` when at least one active level from an MPAS cell contributes to error metrics and `0` otherwise.
+- Corrected the colliding/reserved `cblock2.hpp` header guard.
+- Expanded `README.md` with the round-trip command, independent regularization controls, threading control, generated files, tag semantics, and ParaView filtering instructions.
+
+The managed build, both executable help paths, malformed-thread validation, Niskine smoke workflow, and ParaView H5M loading pass. The Niskine metrics CSV is byte-for-byte identical to the pre-refactor result. The canonical BoB run preserves selected-cell counts, exact coverage classes, and 4,221 scalar cell-eligibility flags.

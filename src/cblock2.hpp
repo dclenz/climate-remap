@@ -5,8 +5,8 @@
 // Argonne National Laboratory
 // dlenz@anl.gov
 //--------------------------------------------------------------
-#ifndef _MFA_CBLOCK
-#define _MFA_CBLOCK
+#ifndef MFA_REMAP_CBLOCK2_HPP
+#define MFA_REMAP_CBLOCK2_HPP
 
 #include    <algorithm>
 #include    <random>
@@ -308,6 +308,9 @@ struct CBlock2 : public BlockBase<T>
 
     bool dumpMatrices = false;
     bool addBdryData = true;
+
+    // Compatibility defaults used by mfa_remap. configureForRoundTrip() enables
+    // the deterministic, full-profile behavior required by remap_loop.
     bool writeLegacyRemapTags = true;
     bool useDeterministicTargetPlane = false;
     bool combineScienceVariables = false;
@@ -366,8 +369,21 @@ struct CBlock2 : public BlockBase<T>
     vector<vector<int>> sourceCellIDs;  // [numSourceElements][maxLevel]
     vector<char> sourceElementIsCore;   // [numSourceElements]
     vector<T> sourceCoverageFractions;  // [numSourceElements]
-    vector<int> sourceCoverageClasses;  // 0=uncovered, 1=partial, 2=full, 3=halo
-    vector<char> sourcePointEligible;   // [numSourceCells]
+    enum class CoverageClass : int
+    {
+        Uncovered = 0,
+        Partial = 1,
+        Full = 2,
+        Halo = 3
+    };
+
+    static constexpr const char* CoverageFractionTagName = "roundtrip_coverage_fraction";
+    static constexpr const char* CoverageClassTagName = "roundtrip_coverage_class";
+    static constexpr const char* LevelEligibilityTagName = "roundtrip_error_eligible";
+    static constexpr const char* CellEligibilityTagName = "roundtrip_error_cell_eligible";
+
+    vector<int> sourceCoverageClasses;  // Stored CoverageClass values.
+    vector<char> sourcePointEligible;   // One flag per active MPAS level.
 
     // zero-initialize pointers during default construction
     CBlock2() :
@@ -430,9 +446,26 @@ struct CBlock2 : public BlockBase<T>
     static
         void load(void* b_, diy::BinaryBuffer& bb)          { mfa::load<CBlock2, T>(b_, bb); }
 
+    void configureForRoundTrip()
+    {
+        writeLegacyRemapTags = false;
+        useDeterministicTargetPlane = true;
+        combineScienceVariables = true;
+    }
+
     void initMOAB(MPI_Comm local, int dim)
     {
         mbr = new MBReader<T>(local, dim);
+    }
+
+    VectorXi pointSetModelDimensions() const
+    {
+        VectorXi modelDimensions = combineScienceVariables ? VectorXi(2) :
+                                                              VectorXi::Ones(varNames.size() + 1);
+        modelDimensions(0) = geomDim;
+        if (combineScienceVariables)
+            modelDimensions(1) = varNames.size();
+        return modelDimensions;
     }
 
     void computeBbox3D()
@@ -951,22 +984,22 @@ struct CBlock2 : public BlockBase<T>
             sourceCoverageFractions[sourceIdx] = coverageFraction;
             if (!sourceElementIsCore[sourceIdx])
             {
-                sourceCoverageClasses[sourceIdx] = 3;
+                sourceCoverageClasses[sourceIdx] = static_cast<int>(CoverageClass::Halo);
                 haloCount++;
             }
             else if (!hasPositiveOverlap || coverageFraction <= fullCoverageTolerance)
             {
-                sourceCoverageClasses[sourceIdx] = 0;
+                sourceCoverageClasses[sourceIdx] = static_cast<int>(CoverageClass::Uncovered);
                 uncoveredCount++;
             }
             else if (coverageFraction < static_cast<T>(1) - fullCoverageTolerance)
             {
-                sourceCoverageClasses[sourceIdx] = 1;
+                sourceCoverageClasses[sourceIdx] = static_cast<int>(CoverageClass::Partial);
                 partialCount++;
             }
             else
             {
-                sourceCoverageClasses[sourceIdx] = 2;
+                sourceCoverageClasses[sourceIdx] = static_cast<int>(CoverageClass::Full);
                 fullCount++;
                 if (supportedMinHeight <= supportedMaxHeight)
                 {
@@ -1170,11 +1203,7 @@ struct CBlock2 : public BlockBase<T>
         computeSourceCellInfo();
 
         // Set up MFA PointSet
-        VectorXi modelDims = combineScienceVariables ? VectorXi(2) :
-                                                        VectorXi::Ones(varNames.size() + 1);
-        modelDims(0) = 3; // points are 3D
-        if (combineScienceVariables)
-            modelDims(1) = varNames.size();
+        VectorXi modelDims = pointSetModelDimensions();
 
         // model_dims << geomDim, 1, 1;          // geometry, salinity, temperature
         mpas_input = new mfa::PointSet<T>(dom_dim, modelDims, numSourceCells);
@@ -1358,11 +1387,7 @@ struct CBlock2 : public BlockBase<T>
     {
         int numTargetElements = mbr->targetElements.size();
 
-        VectorXi modelDims = combineScienceVariables ? VectorXi(2) :
-                                                        VectorXi::Ones(varNames.size() + 1);
-        modelDims(0) = geomDim;
-        if (combineScienceVariables)
-            modelDims(1) = varNames.size();
+        VectorXi modelDims = pointSetModelDimensions();
 
         // Read geometry drivers for extrusion
         Tag sshTag;
@@ -1756,6 +1781,52 @@ struct CBlock2 : public BlockBase<T>
                    varNames.size(), filename);
     }
 
+    void writeCoverageTags()
+    {
+        Tag coverageFractionTag;
+        Tag coverageClassTag;
+        ErrorCode rval = mbr->sourceMb->tag_get_handle(CoverageFractionTagName, 1, MB_TYPE_DOUBLE,
+                                                        coverageFractionTag, MB_TAG_DENSE | MB_TAG_CREAT);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_get_handle(CoverageClassTagName, 1, MB_TYPE_INTEGER,
+                                                 coverageClassTag, MB_TAG_DENSE | MB_TAG_CREAT);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_set_data(coverageFractionTag, selectedSourceElements,
+                                               sourceCoverageFractions.data());
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_set_data(coverageClassTag, selectedSourceElements,
+                                               sourceCoverageClasses.data());
+        if (rval != MB_SUCCESS)
+        {
+            fmt::print(stderr, "ERROR: Failed to write MPAS coverage tags.\n");
+            exit(1);
+        }
+    }
+
+    void writeEligibilityTags(int profileLength, const vector<int>& levelEligibility,
+                              const vector<int>& cellEligibility)
+    {
+        Tag levelTag;
+        Tag cellTag;
+        ErrorCode rval = mbr->sourceMb->tag_get_handle(LevelEligibilityTagName, profileLength,
+                                                        MB_TYPE_INTEGER, levelTag,
+                                                        MB_TAG_DENSE | MB_TAG_CREAT);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_get_handle(CellEligibilityTagName, 1, MB_TYPE_INTEGER,
+                                                 cellTag, MB_TAG_DENSE | MB_TAG_CREAT);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_set_data(levelTag, selectedSourceElements,
+                                               levelEligibility.data());
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_set_data(cellTag, selectedSourceElements,
+                                               cellEligibility.data());
+        if (rval != MB_SUCCESS)
+        {
+            fmt::print(stderr, "ERROR: Failed to write MPAS eligibility tags.\n");
+            exit(1);
+        }
+    }
+
     void writeRoundtripResults(const string& h5mFilename, const string& metricsFilename)
     {
         if (!roundtrip_approx || !input || sourcePointEligible.size() != static_cast<size_t>(input->npts))
@@ -1781,24 +1852,7 @@ struct CBlock2 : public BlockBase<T>
             exit(1);
         }
 
-        Tag coverageFractionTag;
-        Tag coverageClassTag;
-        rval = mbr->sourceMb->tag_get_handle("roundtrip_coverage_fraction", 1, MB_TYPE_DOUBLE,
-                                             coverageFractionTag, MB_TAG_DENSE | MB_TAG_CREAT);
-        if (rval == MB_SUCCESS)
-            rval = mbr->sourceMb->tag_get_handle("roundtrip_coverage_class", 1, MB_TYPE_INTEGER,
-                                                 coverageClassTag, MB_TAG_DENSE | MB_TAG_CREAT);
-        if (rval == MB_SUCCESS)
-            rval = mbr->sourceMb->tag_set_data(coverageFractionTag, selectedSourceElements,
-                                               sourceCoverageFractions.data());
-        if (rval == MB_SUCCESS)
-            rval = mbr->sourceMb->tag_set_data(coverageClassTag, selectedSourceElements,
-                                               sourceCoverageClasses.data());
-        if (rval != MB_SUCCESS)
-        {
-            fmt::print(stderr, "ERROR: Failed to write MPAS coverage tags.\n");
-            exit(1);
-        }
+        writeCoverageTags();
 
         Tag globalIdTag;
         vector<int> sourceGlobalIds(numSourceElements);
@@ -1886,26 +1940,7 @@ struct CBlock2 : public BlockBase<T>
             elementIdx++;
         }
 
-        Tag eligibilityTag;
-        Tag cellEligibilityTag;
-        rval = mbr->sourceMb->tag_get_handle("roundtrip_error_eligible", outputProfileLength,
-                                             MB_TYPE_INTEGER, eligibilityTag,
-                                             MB_TAG_DENSE | MB_TAG_CREAT);
-        if (rval == MB_SUCCESS)
-            rval = mbr->sourceMb->tag_get_handle("roundtrip_error_cell_eligible", 1,
-                                                 MB_TYPE_INTEGER, cellEligibilityTag,
-                                                 MB_TAG_DENSE | MB_TAG_CREAT);
-        if (rval == MB_SUCCESS)
-            rval = mbr->sourceMb->tag_set_data(eligibilityTag, selectedSourceElements,
-                                               eligibilityProfiles.data());
-        if (rval == MB_SUCCESS)
-            rval = mbr->sourceMb->tag_set_data(cellEligibilityTag, selectedSourceElements,
-                                               cellEligibility.data());
-        if (rval != MB_SUCCESS)
-        {
-            fmt::print(stderr, "ERROR: Failed to write MPAS eligibility tags.\n");
-            exit(1);
-        }
+        writeEligibilityTags(outputProfileLength, eligibilityProfiles, cellEligibility);
 
         for (int varIdx = 0; varIdx < varNames.size(); varIdx++)
         {
@@ -2294,4 +2329,4 @@ struct CBlock2 : public BlockBase<T>
     }
 };
 
-#endif // _MFA_CBLOCK
+#endif // MFA_REMAP_CBLOCK2_HPP
