@@ -1854,6 +1854,7 @@ struct CBlock2 : public BlockBase<T>
         vector<vector<T>> absoluteErrorProfiles(varNames.size(),
                                                 vector<T>(numSourceElements * outputProfileLength, nan));
         vector<int> eligibilityProfiles(numSourceElements * outputProfileLength, 0);
+        vector<int> cellEligibility(numSourceElements, 0);
 
         int elementIdx = 0;
         for (EntityHandle element : selectedSourceElements)
@@ -1863,6 +1864,8 @@ struct CBlock2 : public BlockBase<T>
                 const int pointIdx = sourceCellIDs[elementIdx][level];
                 const int profileIdx = elementIdx * outputProfileLength + level;
                 eligibilityProfiles[profileIdx] = sourcePointEligible[pointIdx];
+                if (sourcePointEligible[pointIdx])
+                    cellEligibility[elementIdx] = 1;
                 for (int varIdx = 0; varIdx < varNames.size(); varIdx++)
                 {
                     const T original = input->domain(pointIdx, geomDim + varIdx);
@@ -1884,15 +1887,23 @@ struct CBlock2 : public BlockBase<T>
         }
 
         Tag eligibilityTag;
+        Tag cellEligibilityTag;
         rval = mbr->sourceMb->tag_get_handle("roundtrip_error_eligible", outputProfileLength,
                                              MB_TYPE_INTEGER, eligibilityTag,
                                              MB_TAG_DENSE | MB_TAG_CREAT);
         if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_get_handle("roundtrip_error_cell_eligible", 1,
+                                                 MB_TYPE_INTEGER, cellEligibilityTag,
+                                                 MB_TAG_DENSE | MB_TAG_CREAT);
+        if (rval == MB_SUCCESS)
             rval = mbr->sourceMb->tag_set_data(eligibilityTag, selectedSourceElements,
                                                eligibilityProfiles.data());
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_set_data(cellEligibilityTag, selectedSourceElements,
+                                               cellEligibility.data());
         if (rval != MB_SUCCESS)
         {
-            fmt::print(stderr, "ERROR: Failed to write MPAS eligibility tag.\n");
+            fmt::print(stderr, "ERROR: Failed to write MPAS eligibility tags.\n");
             exit(1);
         }
 
