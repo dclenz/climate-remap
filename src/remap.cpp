@@ -71,7 +71,7 @@ int main(int argc, char** argv)
     ops >> opts::Option('d', "pt_dim",      pt_dim,     " dimension of points");
     ops >> opts::Option('m', "dom_dim",     dom_dim,    " dimension of domain");
     ops >> opts::Option('q', "vars_degree", vars_degree," degree in each dimension of science variables");
-    ops >> opts::Option('v', "vars_nctrl",  vars_nctrl, " number of control points in each dimension of all science variables");
+    ops >> opts::Option('v', "vars_nctrl",  vars_nctrl, " number of control points in each dimension; repeat once per dimension");
     ops >> opts::Option('b', "regularization", regularization, "smoothing parameter for models with non-uniform input density");
     ops >> opts::Option('k', "reg1and2",    reg1and2,   " regularize both 1st and 2nd derivatives (if =1) or just 2nd (if =0)");
     ops >> opts::Option('r', "varNames",    varNames,  " vector of variable names to remap");
@@ -85,6 +85,12 @@ int main(int argc, char** argv)
     {
         if (world.rank() == 0)
             std::cout << ops;
+        return 1;
+    }
+    if (vars_nctrl.size() != 1 && vars_nctrl.size() != dom_dim)
+    {
+        fmt::print(stderr, "ERROR: vars_nctrl requires either one value or one value per domain dimension ({}).\n",
+                   dom_dim);
         return 1;
     }
 
