@@ -39,6 +39,10 @@ find_package                (Threads)
 # add_subdirectory            (ext/fmt)
 # set                         (libraries ${libraries} fmt::fmt)
 
+# Boost.Geometry (header-only)
+find_package                (Boost REQUIRED)
+include_directories         (SYSTEM ${Boost_INCLUDE_DIRS})
+
 # Moab
 find_package                (MOAB REQUIRED)
 message                     ("MOAB_LIBRARIES = ${MOAB_LIBRARIES}")

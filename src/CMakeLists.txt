@@ -11,6 +11,10 @@ add_executable              (mfa_remap              remap.cpp)
 target_link_libraries       (mfa_remap              ${libraries})
 set_property                (TARGET mfa_remap       PROPERTY INSTALL_RPATH_USE_LINK_PATH TRUE)
 
+add_executable              (remap_loop             remap_loop.cpp)
+target_link_libraries       (remap_loop             ${libraries})
+set_property                (TARGET remap_loop      PROPERTY INSTALL_RPATH_USE_LINK_PATH TRUE)
+
 add_executable              (write_vtk              write_vtk.cpp writer.cpp)
 target_link_libraries       (write_vtk              ${libraries})
 set_property                (TARGET write_vtk       PROPERTY INSTALL_RPATH_USE_LINK_PATH TRUE)
@@ -21,7 +25,7 @@ set_target_properties       (mfa_remap_shared PROPERTIES PREFIX "")
 set_target_properties       (mfa_remap_shared PROPERTIES SUFFIX ".so")
 set_target_properties       (mfa_remap_shared PROPERTIES LINK_FLAGS ${linker_flags})
 
-install                     (TARGETS mfa_remap write_vtk mfa_remap_shared
+install                     (TARGETS mfa_remap remap_loop write_vtk mfa_remap_shared
                             DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
                             PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
                             GROUP_READ GROUP_WRITE GROUP_EXECUTE

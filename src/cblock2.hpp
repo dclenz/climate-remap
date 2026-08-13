@@ -13,7 +13,13 @@
 #include    <stdio.h>
 #include    <cmath>
 #include    <limits>
+#include    <fstream>
+#include    <iomanip>
 #include    <unordered_map>
+#include    <boost/geometry.hpp>
+#include    <boost/geometry/geometries/multi_polygon.hpp>
+#include    <boost/geometry/geometries/point_xy.hpp>
+#include    <boost/geometry/geometries/polygon.hpp>
 #include    <mfa/mfa.hpp>
 #include    <mfa/block_base.hpp>
 #include    <diy/master.hpp>
@@ -302,6 +308,8 @@ struct CBlock2 : public BlockBase<T>
 
     bool dumpMatrices = false;
     bool addBdryData = true;
+    bool writeLegacyRemapTags = true;
+    bool useDeterministicTargetPlane = false;
 
     // Source (MPAS) mesh: ECEF Cartesian in meters. Target (ROMS) mesh:
     // unit sphere. We rescale target coords into MPAS's ECEF frame on read
@@ -314,6 +322,8 @@ struct CBlock2 : public BlockBase<T>
     mfa::PointSet<T>*   mpas_approx;
     mfa::PointSet<T>*   mpas_error;
     mfa::PointSet<T>*   roms_input;
+    mfa::MFA<T>*        reverse_mfa;
+    mfa::PointSet<T>*   roundtrip_approx;
 
     MBReader<T>* mbr;
 
@@ -353,6 +363,10 @@ struct CBlock2 : public BlockBase<T>
     Range selectedSourceElements;
     vector<int> sourceElementLevels;    // [numSourceElements]
     vector<vector<int>> sourceCellIDs;  // [numSourceElements][maxLevel]
+    vector<char> sourceElementIsCore;   // [numSourceElements]
+    vector<T> sourceCoverageFractions;  // [numSourceElements]
+    vector<int> sourceCoverageClasses;  // 0=uncovered, 1=partial, 2=full, 3=halo
+    vector<char> sourcePointEligible;   // [numSourceCells]
 
     // zero-initialize pointers during default construction
     CBlock2() :
@@ -365,7 +379,10 @@ struct CBlock2 : public BlockBase<T>
         mpas_input(nullptr),
         mpas_approx(nullptr),
         mpas_error(nullptr),
-        roms_input(nullptr)
+        roms_input(nullptr),
+        reverse_mfa(nullptr),
+        roundtrip_approx(nullptr),
+        mbr(nullptr)
     { 
         sourceMins = VectorX<T>::Zero(geomDim);
         sourceMaxs = VectorX<T>::Zero(geomDim);
@@ -381,6 +398,8 @@ struct CBlock2 : public BlockBase<T>
         delete mpas_approx;
         delete mpas_error;
         delete roms_input;
+        delete reverse_mfa;
+        delete roundtrip_approx;
         delete mbr;
     }
 
@@ -663,12 +682,14 @@ struct CBlock2 : public BlockBase<T>
         }
 
         selectedSourceElements.clear();
+        sourceElementIsCore.clear();
         int haloCount = 0;
         for (int i = 0; i < totalElements; i++)
         {
             if (selected[i])
             {
                 selectedSourceElements.insert(sourceElementHandles[i]);
+                sourceElementIsCore.push_back(coreSelected[i]);
                 if (!coreSelected[i] && haloSelected[i])
                 {
                     haloCount++;
@@ -688,6 +709,281 @@ struct CBlock2 : public BlockBase<T>
             fmt::print(stderr, "Selected source elements: {} (core={} halo={})\n",
                 numSourceElements, coreIndices.size(), haloCount);
         }
+    }
+
+    struct Point2
+    {
+        T x;
+        T y;
+    };
+
+    struct Polygon2
+    {
+        vector<Point2> points;
+        T minX;
+        T maxX;
+        T minY;
+        T maxY;
+    };
+
+    using BoostPoint2 = boost::geometry::model::d2::point_xy<T>;
+    using BoostPolygon2 = boost::geometry::model::polygon<BoostPoint2>;
+    using BoostMultiPolygon2 = boost::geometry::model::multi_polygon<BoostPolygon2>;
+
+    static BoostPolygon2 toBoostPolygon(const vector<Point2>& points)
+    {
+        BoostPolygon2 polygon;
+        for (const Point2& point : points)
+            boost::geometry::append(polygon.outer(), BoostPoint2(point.x, point.y));
+        boost::geometry::correct(polygon);
+        return polygon;
+    }
+
+    static T signedPolygonArea(const vector<Point2>& polygon)
+    {
+        T area = 0;
+        for (size_t i = 0; i < polygon.size(); i++)
+        {
+            const Point2& a = polygon[i];
+            const Point2& b = polygon[(i + 1) % polygon.size()];
+            area += a.x * b.y - b.x * a.y;
+        }
+        return area * static_cast<T>(0.5);
+    }
+
+    Polygon2 projectedElement(Interface* mb, EntityHandle element, T coordinateScale) const
+    {
+        const EntityHandle* connectivity = nullptr;
+        int count = 0;
+        ErrorCode rval = mb->get_connectivity(element, connectivity, count);
+        if (rval != MB_SUCCESS || !connectivity || count < 3)
+        {
+            fmt::print(stderr, "ERROR: Invalid polygon connectivity for entity {}.\n", element);
+            exit(1);
+        }
+
+        vector<T> coordinates(count * geomDim);
+        rval = mb->get_coords(connectivity, count, coordinates.data());
+        if (rval != MB_SUCCESS)
+        {
+            fmt::print(stderr, "ERROR: Failed to read polygon coordinates for entity {}.\n", element);
+            exit(1);
+        }
+
+        Polygon2 polygon;
+        polygon.minX = polygon.minY = numeric_limits<T>::max();
+        polygon.maxX = polygon.maxY = numeric_limits<T>::lowest();
+        polygon.points.reserve(count);
+        for (int i = 0; i < count; i++)
+        {
+            VectorX<T> xyz(geomDim);
+            for (int dim = 0; dim < geomDim; dim++)
+                xyz(dim) = coordinates[i * geomDim + dim] * coordinateScale;
+            VectorX<T> projected;
+            targetBoundingSpace.toRefSpace(xyz, projected);
+            Point2 point{projected(0), projected(1)};
+            polygon.points.push_back(point);
+            polygon.minX = std::min(polygon.minX, point.x);
+            polygon.maxX = std::max(polygon.maxX, point.x);
+            polygon.minY = std::min(polygon.minY, point.y);
+            polygon.maxY = std::max(polygon.maxY, point.y);
+        }
+        return polygon;
+    }
+
+    void classifySourceCoverage()
+    {
+        const int targetCount = mbr->targetElements.size();
+        if (targetCount == 0 || numSourceElements == 0)
+        {
+            fmt::print(stderr, "ERROR: Cannot classify coverage with empty source or target elements.\n");
+            exit(1);
+        }
+
+        vector<Polygon2> targetPolygons;
+        vector<EntityHandle> targetHandles;
+        targetPolygons.reserve(targetCount);
+        targetHandles.reserve(targetCount);
+        T gridMinX = numeric_limits<T>::max();
+        T gridMaxX = numeric_limits<T>::lowest();
+        T gridMinY = numeric_limits<T>::max();
+        T gridMaxY = numeric_limits<T>::lowest();
+        for (EntityHandle element : mbr->targetElements)
+        {
+            targetHandles.push_back(element);
+            targetPolygons.push_back(projectedElement(mbr->targetMb, element, R_earth));
+            const Polygon2& polygon = targetPolygons.back();
+            gridMinX = std::min(gridMinX, polygon.minX);
+            gridMaxX = std::max(gridMaxX, polygon.maxX);
+            gridMinY = std::min(gridMinY, polygon.minY);
+            gridMaxY = std::max(gridMaxY, polygon.maxY);
+        }
+
+        const int gridSize = std::max(1, static_cast<int>(std::sqrt(targetCount)));
+        const T cellWidth = (gridMaxX - gridMinX) / gridSize;
+        const T cellHeight = (gridMaxY - gridMinY) / gridSize;
+        vector<vector<int>> bins(gridSize * gridSize);
+        auto binIndex = [&](T value, T minimum, T width)
+        {
+            if (width <= 0)
+                return 0;
+            return std::max(0, std::min(gridSize - 1,
+                static_cast<int>((value - minimum) / width)));
+        };
+        for (int targetIdx = 0; targetIdx < targetCount; targetIdx++)
+        {
+            const Polygon2& polygon = targetPolygons[targetIdx];
+            const int minI = binIndex(polygon.minX, gridMinX, cellWidth);
+            const int maxI = binIndex(polygon.maxX, gridMinX, cellWidth);
+            const int minJ = binIndex(polygon.minY, gridMinY, cellHeight);
+            const int maxJ = binIndex(polygon.maxY, gridMinY, cellHeight);
+            for (int j = minJ; j <= maxJ; j++)
+                for (int i = minI; i <= maxI; i++)
+                    bins[j * gridSize + i].push_back(targetIdx);
+        }
+
+        sourceCoverageFractions.assign(numSourceElements, 0);
+        sourceCoverageClasses.assign(numSourceElements, 0);
+        sourcePointEligible.assign(numSourceCells, 0);
+        vector<int> candidateStamp(targetCount, -1);
+        int fullCount = 0;
+        int partialCount = 0;
+        int uncoveredCount = 0;
+        int haloCount = 0;
+        int eligiblePointCount = 0;
+        const T fullCoverageTolerance = static_cast<T>(1e-6);
+
+        int sourceIdx = 0;
+        for (EntityHandle sourceElement : selectedSourceElements)
+        {
+            const Polygon2 sourcePolygon = projectedElement(mbr->sourceMb, sourceElement, 1);
+            const T sourceArea = std::abs(signedPolygonArea(sourcePolygon.points));
+            if (sourceArea <= 0)
+            {
+                fmt::print(stderr, "ERROR: Degenerate projected MPAS polygon {}.\n", sourceElement);
+                exit(1);
+            }
+
+            const int minI = binIndex(sourcePolygon.minX, gridMinX, cellWidth);
+            const int maxI = binIndex(sourcePolygon.maxX, gridMinX, cellWidth);
+            const int minJ = binIndex(sourcePolygon.minY, gridMinY, cellHeight);
+            const int maxJ = binIndex(sourcePolygon.maxY, gridMinY, cellHeight);
+            vector<int> candidates;
+            for (int j = minJ; j <= maxJ; j++)
+            {
+                for (int i = minI; i <= maxI; i++)
+                {
+                    for (int targetIdx : bins[j * gridSize + i])
+                    {
+                        if (candidateStamp[targetIdx] != sourceIdx)
+                        {
+                            candidateStamp[targetIdx] = sourceIdx;
+                            candidates.push_back(targetIdx);
+                        }
+                    }
+                }
+            }
+
+            T supportedMinHeight = numeric_limits<T>::lowest();
+            T supportedMaxHeight = numeric_limits<T>::max();
+            bool hasPositiveOverlap = false;
+            BoostMultiPolygon2 coveredRegion;
+            const BoostPolygon2 boostSourcePolygon = toBoostPolygon(sourcePolygon.points);
+            for (int targetIdx : candidates)
+            {
+                const Polygon2& targetPolygon = targetPolygons[targetIdx];
+                if (targetPolygon.maxX < sourcePolygon.minX || targetPolygon.minX > sourcePolygon.maxX ||
+                    targetPolygon.maxY < sourcePolygon.minY || targetPolygon.minY > sourcePolygon.maxY)
+                    continue;
+
+                vector<BoostPolygon2> intersections;
+                boost::geometry::intersection(boostSourcePolygon,
+                                              toBoostPolygon(targetPolygon.points),
+                                              intersections);
+                T intersectionArea = 0;
+                for (const BoostPolygon2& intersection : intersections)
+                    intersectionArea += std::abs(boost::geometry::area(intersection));
+                if (intersectionArea <= sourceArea * static_cast<T>(1e-12))
+                    continue;
+
+                BoostMultiPolygon2 nextCoveredRegion;
+                if (coveredRegion.empty())
+                {
+                    for (const BoostPolygon2& intersection : intersections)
+                        coveredRegion.push_back(intersection);
+                }
+                else
+                {
+                    BoostMultiPolygon2 additions;
+                    for (const BoostPolygon2& intersection : intersections)
+                    {
+                        BoostMultiPolygon2 difference;
+                        boost::geometry::difference(intersection, coveredRegion, difference);
+                        additions.insert(additions.end(), difference.begin(), difference.end());
+                    }
+                    nextCoveredRegion = coveredRegion;
+                    nextCoveredRegion.insert(nextCoveredRegion.end(), additions.begin(), additions.end());
+                    coveredRegion = std::move(nextCoveredRegion);
+                }
+                hasPositiveOverlap = true;
+                const int firstPoint = targetIdx * (targetHeights.size() / targetCount);
+                const int profileLength = targetHeights.size() / targetCount;
+                T profileMin = numeric_limits<T>::max();
+                T profileMax = numeric_limits<T>::lowest();
+                for (int level = 0; level < profileLength; level++)
+                {
+                    profileMin = std::min(profileMin, targetHeights(firstPoint + level));
+                    profileMax = std::max(profileMax, targetHeights(firstPoint + level));
+                }
+                supportedMinHeight = std::max(supportedMinHeight, profileMin);
+                supportedMaxHeight = std::min(supportedMaxHeight, profileMax);
+            }
+
+            T coveredArea = 0;
+            for (const BoostPolygon2& polygon : coveredRegion)
+                coveredArea += std::abs(boost::geometry::area(polygon));
+            const T coverageFraction = std::max(static_cast<T>(0),
+                std::min(static_cast<T>(1), coveredArea / sourceArea));
+            sourceCoverageFractions[sourceIdx] = coverageFraction;
+            if (!sourceElementIsCore[sourceIdx])
+            {
+                sourceCoverageClasses[sourceIdx] = 3;
+                haloCount++;
+            }
+            else if (!hasPositiveOverlap || coverageFraction <= fullCoverageTolerance)
+            {
+                sourceCoverageClasses[sourceIdx] = 0;
+                uncoveredCount++;
+            }
+            else if (coverageFraction < static_cast<T>(1) - fullCoverageTolerance)
+            {
+                sourceCoverageClasses[sourceIdx] = 1;
+                partialCount++;
+            }
+            else
+            {
+                sourceCoverageClasses[sourceIdx] = 2;
+                fullCount++;
+                if (supportedMinHeight <= supportedMaxHeight)
+                {
+                    for (int level = 0; level < sourceElementLevels[sourceIdx]; level++)
+                    {
+                        const int pointIdx = sourceCellIDs[sourceIdx][level];
+                        const T height = sourceHeights(pointIdx);
+                        if (height >= supportedMinHeight && height <= supportedMaxHeight)
+                        {
+                            sourcePointEligible[pointIdx] = 1;
+                            eligiblePointCount++;
+                        }
+                    }
+                }
+            }
+            sourceIdx++;
+        }
+
+        fmt::print(stderr,
+                   "MPAS wet-ROMS coverage: full={} partial={} uncovered={} halo={}; eligible active levels={}\n",
+                   fullCount, partialCount, uncoveredCount, haloCount, eligiblePointCount);
     }
 
     // Compute the maximum number of depth levels over all cells in the MPAS mesh
@@ -896,8 +1192,8 @@ struct CBlock2 : public BlockBase<T>
         mbr->sourceMb->tag_get_data(sshTag, selectedSourceElements, sshData.data());
         mbr->sourceMb->tag_get_data(layerThicknessTag, selectedSourceElements, layerThicknessData.data());
 
-        // Build one 3D point per active extruded cell using axial heights:
-        // top = ssh - cumulative_thickness; bottom = top - layerThickness.
+        // Build one point per active extruded cell. The top cell spans from
+        // SSH to -layerThickness[0]; lower cells continue from that bottom.
         int elementID = 0;
         minSourceHeight = numeric_limits<T>::max();
         maxSourceHeight = numeric_limits<T>::lowest();
@@ -935,19 +1231,9 @@ struct CBlock2 : public BlockBase<T>
 
                 int cellID = sourceCellIDs[elementID][level];
 
-                // TODO: adjust top layer
                 T layerThickness = layerThicknessData[elementID * layerTagLength + level];
-                T top = 0;
-                if (level == 0)
-                {
-                    top = sshData[elementID];
-                }
-                else
-                {
-                    top = -1 * cumulativeThickness;
-                }
-                // T top = sshData[elementID] - cumulativeThickness;
-                T bottom = top - layerThickness;
+                const T top = level == 0 ? sshData[elementID] : -cumulativeThickness;
+                const T bottom = -(cumulativeThickness + layerThickness);
                 T axialCentroid = 0.5 * (top + bottom);
 
                 for (int k = 0; k < geomDim; k++)
@@ -993,9 +1279,10 @@ struct CBlock2 : public BlockBase<T>
 
     mfa::AffMap<T> computeTargetPlaneMap(const MatrixX<T>& targetPointLocations)
     {
-        VectorX<T> n = mfa::estimateSurfaceNormal<T>(targetPointLocations);
-        auto [a, b] = mfa::getPlaneVectors<T>(n);
         VectorX<T> center = targetPointLocations.colwise().mean();
+        VectorX<T> n = useDeterministicTargetPlane ? center.normalized() :
+                       mfa::estimateSurfaceNormal<T>(targetPointLocations);
+        auto [a, b] = mfa::getPlaneVectors<T>(n);
 
         if (verbose >= 2)
         {
@@ -1282,44 +1569,68 @@ struct CBlock2 : public BlockBase<T>
         fmt::print(stderr, "Approx var 1 min/max: {}/{}\n", mpas_approx->domain.col(geomDim).minCoeff(), mpas_approx->domain.col(geomDim).maxCoeff());
         fmt::print(stderr, "Approx var 1 has nans: {}\n", mpas_approx->domain.col(geomDim).hasNaN());
 
-        // Add remapped values as new tags
-        for (int l = 0; l < varNames.size(); l++)
+        Tag locationTag;
+        ErrorCode rval = mbr->targetMb->tag_get_handle("ROMS3DLocations", locationTag);
+        if (rval != MB_SUCCESS)
         {
-            Tag remapTag;
-            string remapTagName = varNames[l] + "_remap";
-            vector<T> remapData(mpas_approx->npts);
-            mbr->targetMb->tag_get_handle(remapTagName.c_str(), 1, MB_TYPE_DOUBLE, remapTag, MB_TAG_DENSE | MB_TAG_CREAT);
-            for (int i = 0; i < mpas_approx->npts; i++)
-            {
-                remapData[i] = mpas_approx->domain(i, geomDim + l);
-            }
-            mbr->targetMb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
+            fmt::print(stderr, "ERROR: Failed to get ROMS3DLocations tag.\n");
+            exit(1);
+        }
+        int locationTagLength = 0;
+        rval = mbr->targetMb->tag_get_length(locationTag, locationTagLength);
+        if (rval != MB_SUCCESS || locationTagLength <= 0)
+        {
+            fmt::print(stderr, "ERROR: Invalid ROMS3DLocations tag length {}.\n", locationTagLength);
+            exit(1);
         }
 
-        Tag locationTag;
-        mbr->targetMb->tag_get_handle("ROMS3DLocations", locationTag);
-        int locationTagLength = 0;
-        mbr->targetMb->tag_get_length(locationTag, locationTagLength);
+        const size_t expectedTargetPoints = mbr->targetElements.size() * locationTagLength;
+        if (static_cast<size_t>(mpas_approx->npts) != expectedTargetPoints)
+        {
+            fmt::print(stderr, "ERROR: Decoded point count {} does not match {} target elements x {} levels.\n",
+                       mpas_approx->npts, mbr->targetElements.size(), locationTagLength);
+            exit(1);
+        }
+
+        if (writeLegacyRemapTags)
+        {
+            // Preserve the historical output layout for mfa_remap. remap_loop uses
+            // writeForwardRemapH5M(), which writes complete array-valued profiles.
+            for (int l = 0; l < varNames.size(); l++)
+            {
+                Tag remapTag;
+                string remapTagName = varNames[l] + "_remap";
+                vector<T> remapData(mpas_approx->npts);
+                mbr->targetMb->tag_get_handle(remapTagName.c_str(), 1, MB_TYPE_DOUBLE, remapTag, MB_TAG_DENSE | MB_TAG_CREAT);
+                for (int i = 0; i < mpas_approx->npts; i++)
+                {
+                    remapData[i] = mpas_approx->domain(i, geomDim + l);
+                }
+                mbr->targetMb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
+            }
+        }
         fmt::print(stderr, "ROMS3DLocations tag length: {}\n", locationTagLength);
         fmt::print(stderr, "mpas_approx npts: {}\n", mpas_approx->npts);
         fmt::print(stderr, "Expected ROMS elements: {}\n", mpas_approx->npts / locationTagLength);
         fmt::print(stderr, "Actual ROMS elements: {}\n", mbr->targetElements.size());
 
-        int nLevels = 15;
-        for (int m = 0; m < nLevels; m++)
+        if (writeLegacyRemapTags)
         {
-
-            for (int l = 0; l < varNames.size(); l++)
+            int nLevels = 15;
+            for (int m = 0; m < nLevels; m++)
             {
-                Tag remapTag;
-                string remapTag1Name = varNames[l] + "_remap_" + to_string(m);
-                vector<T> remapData(mpas_approx->npts / locationTagLength);
-                mbr->targetMb->tag_get_handle(remapTag1Name.c_str(), 1, MB_TYPE_DOUBLE, remapTag, MB_TAG_DENSE | MB_TAG_CREAT);
-                for (int i = 0; i < mbr->targetElements.size(); i++)
+                for (int l = 0; l < varNames.size(); l++)
                 {
-                    remapData[i] = mpas_approx->domain(i * locationTagLength + m, geomDim + l);
+                    Tag remapTag;
+                    string remapTag1Name = varNames[l] + "_remap_" + to_string(m);
+                    vector<T> remapData(mpas_approx->npts / locationTagLength);
+                    mbr->targetMb->tag_get_handle(remapTag1Name.c_str(), 1, MB_TYPE_DOUBLE, remapTag, MB_TAG_DENSE | MB_TAG_CREAT);
+                    for (int i = 0; i < mbr->targetElements.size(); i++)
+                    {
+                        remapData[i] = mpas_approx->domain(i * locationTagLength + m, geomDim + l);
+                    }
+                    mbr->targetMb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
                 }
-                mbr->targetMb->tag_set_data(remapTag, mbr->targetElements, remapData.data());
             }
         }
 
@@ -1357,6 +1668,293 @@ struct CBlock2 : public BlockBase<T>
             fmt::print(stderr, "Variable '{}':\n", varNames[l]);
             stats.print_var(l);
         }
+    }
+
+    void writeForwardRemapH5M(const string& filename)
+    {
+        if (!approx)
+        {
+            fmt::print(stderr, "ERROR: Cannot write forward profiles before remapping.\n");
+            exit(1);
+        }
+
+        Tag locationTag;
+        ErrorCode rval = mbr->targetMb->tag_get_handle("ROMS3DLocations", locationTag);
+        if (rval != MB_SUCCESS)
+        {
+            fmt::print(stderr, "ERROR: Failed to get ROMS3DLocations tag.\n");
+            exit(1);
+        }
+
+        int locationTagLength = 0;
+        rval = mbr->targetMb->tag_get_length(locationTag, locationTagLength);
+        const size_t expectedPoints = mbr->targetElements.size() * locationTagLength;
+        if (rval != MB_SUCCESS || locationTagLength <= 0 ||
+            static_cast<size_t>(approx->npts) != expectedPoints)
+        {
+            fmt::print(stderr, "ERROR: Cannot pack {} decoded points into {} target profiles of length {}.\n",
+                       approx->npts, mbr->targetElements.size(), locationTagLength);
+            exit(1);
+        }
+
+        for (int varIdx = 0; varIdx < varNames.size(); varIdx++)
+        {
+            const string tagName = varNames[varIdx] + "_forward_remap";
+            vector<T> profileData(expectedPoints);
+            for (size_t pointIdx = 0; pointIdx < expectedPoints; pointIdx++)
+            {
+                const T value = approx->domain(pointIdx, geomDim + varIdx);
+                if (!std::isfinite(value))
+                {
+                    fmt::print(stderr, "ERROR: Non-finite value in '{}' at decoded point {}.\n",
+                               tagName, pointIdx);
+                    exit(1);
+                }
+                profileData[pointIdx] = value;
+            }
+
+            Tag profileTag;
+            rval = mbr->targetMb->tag_get_handle(tagName.c_str(), locationTagLength,
+                                                  MB_TYPE_DOUBLE, profileTag,
+                                                  MB_TAG_DENSE | MB_TAG_CREAT);
+            if (rval != MB_SUCCESS)
+            {
+                fmt::print(stderr, "ERROR: Failed to create profile tag '{}'.\n", tagName);
+                exit(1);
+            }
+            rval = mbr->targetMb->tag_set_data(profileTag, mbr->targetElements,
+                                                profileData.data());
+            if (rval != MB_SUCCESS)
+            {
+                fmt::print(stderr, "ERROR: Failed to populate profile tag '{}'.\n", tagName);
+                exit(1);
+            }
+        }
+
+        rval = mbr->targetMb->write_mesh(filename.c_str(), &mbr->targetFileSet, 1);
+        if (rval != MB_SUCCESS)
+        {
+            fmt::print(stderr, "ERROR: Failed to write forward remap file '{}'.\n", filename);
+            exit(1);
+        }
+        fmt::print(stderr, "Wrote {} complete forward profiles to '{}'.\n",
+                   varNames.size(), filename);
+    }
+
+    void writeRoundtripResults(const string& h5mFilename, const string& metricsFilename)
+    {
+        if (!roundtrip_approx || !input || sourcePointEligible.size() != static_cast<size_t>(input->npts))
+        {
+            fmt::print(stderr, "ERROR: Round-trip values and eligibility must be ready before writing results.\n");
+            exit(1);
+        }
+
+        const T nan = numeric_limits<T>::quiet_NaN();
+        Tag maxLevelCellTag;
+        ErrorCode rval = mbr->sourceMb->tag_get_handle("maxLevelCell", maxLevelCellTag);
+        int outputProfileLength = 0;
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_get_length(maxLevelCellTag, outputProfileLength);
+        Tag layerThicknessTag;
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_get_handle("timeDaily_avg_layerThickness_3d", layerThicknessTag);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_get_length(layerThicknessTag, outputProfileLength);
+        if (rval != MB_SUCCESS || outputProfileLength < maxLevel)
+        {
+            fmt::print(stderr, "ERROR: Invalid MPAS output profile length {}.\n", outputProfileLength);
+            exit(1);
+        }
+
+        Tag coverageFractionTag;
+        Tag coverageClassTag;
+        rval = mbr->sourceMb->tag_get_handle("roundtrip_coverage_fraction", 1, MB_TYPE_DOUBLE,
+                                             coverageFractionTag, MB_TAG_DENSE | MB_TAG_CREAT);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_get_handle("roundtrip_coverage_class", 1, MB_TYPE_INTEGER,
+                                                 coverageClassTag, MB_TAG_DENSE | MB_TAG_CREAT);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_set_data(coverageFractionTag, selectedSourceElements,
+                                               sourceCoverageFractions.data());
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_set_data(coverageClassTag, selectedSourceElements,
+                                               sourceCoverageClasses.data());
+        if (rval != MB_SUCCESS)
+        {
+            fmt::print(stderr, "ERROR: Failed to write MPAS coverage tags.\n");
+            exit(1);
+        }
+
+        Tag globalIdTag;
+        vector<int> sourceGlobalIds(numSourceElements);
+        rval = mbr->sourceMb->tag_get_handle("GLOBAL_ID", globalIdTag);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_get_data(globalIdTag, selectedSourceElements,
+                                               sourceGlobalIds.data());
+        if (rval != MB_SUCCESS)
+        {
+            fmt::print(stderr, "ERROR: Failed to read MPAS GLOBAL_ID values.\n");
+            exit(1);
+        }
+
+        struct Metric
+        {
+            long count = 0;
+            int maxGlobalId = -1;
+            int maxLevel = -1;
+            T sumError = 0;
+            T sumSquaredError = 0;
+            T maxAbsoluteError = 0;
+            T originalMin = numeric_limits<T>::max();
+            T originalMax = numeric_limits<T>::lowest();
+            T roundtripMin = numeric_limits<T>::max();
+            T roundtripMax = numeric_limits<T>::lowest();
+        };
+        vector<Metric> overall(varNames.size());
+        vector<vector<Metric>> perLevel(varNames.size(), vector<Metric>(maxLevel));
+        auto updateMetric = [](Metric& metric, T original, T roundtrip,
+                               int globalId, int level)
+        {
+            const T error = roundtrip - original;
+            const T absoluteError = std::abs(error);
+            metric.count++;
+            metric.sumError += error;
+            metric.sumSquaredError += error * error;
+            metric.originalMin = std::min(metric.originalMin, original);
+            metric.originalMax = std::max(metric.originalMax, original);
+            metric.roundtripMin = std::min(metric.roundtripMin, roundtrip);
+            metric.roundtripMax = std::max(metric.roundtripMax, roundtrip);
+            if (absoluteError >= metric.maxAbsoluteError)
+            {
+                metric.maxAbsoluteError = absoluteError;
+                metric.maxGlobalId = globalId;
+                metric.maxLevel = level;
+            }
+        };
+
+        vector<vector<T>> roundtripProfiles(varNames.size(),
+                                             vector<T>(numSourceElements * outputProfileLength, nan));
+        vector<vector<T>> signedErrorProfiles(varNames.size(),
+                                              vector<T>(numSourceElements * outputProfileLength, nan));
+        vector<vector<T>> absoluteErrorProfiles(varNames.size(),
+                                                vector<T>(numSourceElements * outputProfileLength, nan));
+        vector<int> eligibilityProfiles(numSourceElements * outputProfileLength, 0);
+
+        int elementIdx = 0;
+        for (EntityHandle element : selectedSourceElements)
+        {
+            for (int level = 0; level < sourceElementLevels[elementIdx]; level++)
+            {
+                const int pointIdx = sourceCellIDs[elementIdx][level];
+                const int profileIdx = elementIdx * outputProfileLength + level;
+                eligibilityProfiles[profileIdx] = sourcePointEligible[pointIdx];
+                for (int varIdx = 0; varIdx < varNames.size(); varIdx++)
+                {
+                    const T original = input->domain(pointIdx, geomDim + varIdx);
+                    const T roundtrip = roundtrip_approx->domain(pointIdx, geomDim + varIdx);
+                    roundtripProfiles[varIdx][profileIdx] = roundtrip;
+                    if (sourcePointEligible[pointIdx])
+                    {
+                        const T error = roundtrip - original;
+                        signedErrorProfiles[varIdx][profileIdx] = error;
+                        absoluteErrorProfiles[varIdx][profileIdx] = std::abs(error);
+                        updateMetric(overall[varIdx], original, roundtrip,
+                                     sourceGlobalIds[elementIdx], level);
+                        updateMetric(perLevel[varIdx][level], original, roundtrip,
+                                     sourceGlobalIds[elementIdx], level);
+                    }
+                }
+            }
+            elementIdx++;
+        }
+
+        Tag eligibilityTag;
+        rval = mbr->sourceMb->tag_get_handle("roundtrip_error_eligible", outputProfileLength,
+                                             MB_TYPE_INTEGER, eligibilityTag,
+                                             MB_TAG_DENSE | MB_TAG_CREAT);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->tag_set_data(eligibilityTag, selectedSourceElements,
+                                               eligibilityProfiles.data());
+        if (rval != MB_SUCCESS)
+        {
+            fmt::print(stderr, "ERROR: Failed to write MPAS eligibility tag.\n");
+            exit(1);
+        }
+
+        for (int varIdx = 0; varIdx < varNames.size(); varIdx++)
+        {
+            const vector<pair<string, vector<T>*>> outputs = {
+                {varNames[varIdx] + "_roundtrip", &roundtripProfiles[varIdx]},
+                {varNames[varIdx] + "_roundtrip_signed_error", &signedErrorProfiles[varIdx]},
+                {varNames[varIdx] + "_roundtrip_absolute_error", &absoluteErrorProfiles[varIdx]}
+            };
+            for (const auto& output : outputs)
+            {
+                Tag tag;
+                rval = mbr->sourceMb->tag_get_handle(output.first.c_str(), outputProfileLength,
+                                                      MB_TYPE_DOUBLE, tag,
+                                                      MB_TAG_DENSE | MB_TAG_CREAT);
+                if (rval == MB_SUCCESS)
+                    rval = mbr->sourceMb->tag_set_data(tag, selectedSourceElements,
+                                                       output.second->data());
+                if (rval != MB_SUCCESS)
+                {
+                    fmt::print(stderr, "ERROR: Failed to write MPAS tag '{}'.\n", output.first);
+                    exit(1);
+                }
+            }
+        }
+
+        EntityHandle outputSet;
+        rval = mbr->sourceMb->create_meshset(MESHSET_SET, outputSet);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->add_entities(outputSet, selectedSourceElements);
+        if (rval == MB_SUCCESS)
+            rval = mbr->sourceMb->write_mesh(h5mFilename.c_str(), &outputSet, 1);
+        if (rval != MB_SUCCESS)
+        {
+            fmt::print(stderr, "ERROR: Failed to write round-trip MPAS file '{}'.\n", h5mFilename);
+            exit(1);
+        }
+
+        ofstream metrics(metricsFilename);
+        if (!metrics)
+        {
+            fmt::print(stderr, "ERROR: Failed to open metrics file '{}'.\n", metricsFilename);
+            exit(1);
+        }
+        metrics << "variable,level,count,bias,rmse,max_absolute_error,max_global_id,max_level,"
+                   "original_min,original_max,roundtrip_min,roundtrip_max\n";
+        metrics << setprecision(17);
+        auto writeMetric = [&](const string& variable, const string& level, const Metric& metric)
+        {
+            if (metric.count == 0)
+                return;
+            const T bias = metric.sumError / metric.count;
+            const T rmse = std::sqrt(metric.sumSquaredError / metric.count);
+            metrics << variable << ',' << level << ',' << metric.count << ',' << bias << ','
+                    << rmse << ',' << metric.maxAbsoluteError << ',' << metric.maxGlobalId << ','
+                    << metric.maxLevel << ',' << metric.originalMin << ',' << metric.originalMax << ','
+                    << metric.roundtripMin << ',' << metric.roundtripMax << '\n';
+        };
+        for (int varIdx = 0; varIdx < varNames.size(); varIdx++)
+        {
+            writeMetric(varNames[varIdx], "overall", overall[varIdx]);
+            for (int level = 0; level < maxLevel; level++)
+                writeMetric(varNames[varIdx], to_string(level), perLevel[varIdx][level]);
+
+            const Metric& metric = overall[varIdx];
+            if (metric.count > 0)
+            {
+                fmt::print(stderr,
+                           "Round-trip '{}': count={} bias={} RMSE={} max_abs={} at GLOBAL_ID {} level {}\n",
+                           varNames[varIdx], metric.count, metric.sumError / metric.count,
+                           std::sqrt(metric.sumSquaredError / metric.count), metric.maxAbsoluteError,
+                           metric.maxGlobalId, metric.maxLevel);
+            }
+        }
+        fmt::print(stderr, "Wrote round-trip fields to '{}' and metrics to '{}'.\n",
+                   h5mFilename, metricsFilename);
     }
 
     // Write .mb files as a VTK file for debugging
@@ -1496,6 +2094,122 @@ struct CBlock2 : public BlockBase<T>
         setParameterizations();
         this->setup_MFA(cp, info);
         computeRemap(cp, info);
+    }
+
+    void setReverse3DKnots()
+    {
+        Tag locationTag;
+        ErrorCode rval = mbr->targetMb->tag_get_handle("ROMS3DLocations", locationTag);
+        int locationTagLength = 0;
+        if (rval == MB_SUCCESS)
+            rval = mbr->targetMb->tag_get_length(locationTag, locationTagLength);
+        if (rval != MB_SUCCESS || locationTagLength < 2)
+        {
+            fmt::print(stderr, "ERROR: Need at least two ROMS levels to set reverse vertical knots.\n");
+            exit(1);
+        }
+
+        const int numTargetElements = mbr->targetElements.size();
+        if (targetHeights.size() != numTargetElements * locationTagLength)
+        {
+            fmt::print(stderr, "ERROR: ROMS height count does not match target profile layout.\n");
+            exit(1);
+        }
+
+        vector<T> levelParams(locationTagLength, 0);
+        for (int level = 0; level < locationTagLength; level++)
+        {
+            T sum = 0;
+            for (int element = 0; element < numTargetElements; element++)
+                sum += targetHeights(element * locationTagLength + level);
+            const T meanHeight = sum / numTargetElements;
+            const T param = (meanHeight - minHeight) / (maxHeight - minHeight);
+            levelParams[level] = std::max(static_cast<T>(0), std::min(static_cast<T>(1), param));
+        }
+        std::sort(levelParams.begin(), levelParams.end());
+
+        const int verticalDim = 2;
+        const int degree = reverse_mfa->var(0).p(verticalDim);
+        const int nctrl = reverse_mfa->var(0).tmesh.tensor_prods[0].nctrl_pts(verticalDim);
+        const int numInteriorKnots = nctrl - degree - 1;
+        if (numInteriorKnots < 0)
+        {
+            fmt::print(stderr, "ERROR: Invalid reverse vertical model: nctrl={} degree={}.\n",
+                       nctrl, degree);
+            exit(1);
+        }
+
+        vector<T> zknots(numInteriorKnots);
+        for (int i = 0; i < numInteriorKnots; i++)
+        {
+            const T position = static_cast<T>(i + 1) * (levelParams.size() - 1) /
+                               static_cast<T>(numInteriorKnots + 1);
+            const size_t lower = static_cast<size_t>(std::floor(position));
+            const size_t upper = std::min(lower + 1, levelParams.size() - 1);
+            const T fraction = position - lower;
+            zknots[i] = levelParams[lower] + fraction * (levelParams[upper] - levelParams[lower]);
+        }
+
+        vector<vector<T>> allknots(dom_dim);
+        for (int dim = 0; dim < dom_dim; dim++)
+            allknots[dim] = reverse_mfa->var(0).tmesh.all_knots[dim];
+        if (!zknots.empty())
+            allknots[verticalDim] = reverse_mfa->pinKnots(zknots, degree);
+
+        fmt::print(stderr, "Reverse ROMS vertical interior knots: {}\n", mfa::print_vec(zknots));
+        reverse_mfa->setKnots(allknots);
+    }
+
+    void reverseRemap(mfa::MFAInfo info)
+    {
+        if (!input || !approx)
+        {
+            fmt::print(stderr, "ERROR: Forward remap must complete before reverse remapping.\n");
+            exit(1);
+        }
+
+        delete reverse_mfa;
+        reverse_mfa = new mfa::MFA<T>(info);
+        setReverse3DKnots();
+
+        reverse_mfa->FixedEncode(*approx, info.regularization, info.reg1and2, info.weighted);
+
+        delete roundtrip_approx;
+        roundtrip_approx = new mfa::PointSet<T>(input->params, input->model_dims());
+        reverse_mfa->Decode(*roundtrip_approx);
+
+        if (roundtrip_approx->npts != input->npts)
+        {
+            fmt::print(stderr, "ERROR: Reverse decode produced {} points; expected {} MPAS points.\n",
+                       roundtrip_approx->npts, input->npts);
+            exit(1);
+        }
+        for (int varIdx = 0; varIdx < varNames.size(); varIdx++)
+        {
+            for (int pointIdx = 0; pointIdx < roundtrip_approx->npts; pointIdx++)
+            {
+                if (!std::isfinite(roundtrip_approx->domain(pointIdx, geomDim + varIdx)))
+                {
+                    fmt::print(stderr, "ERROR: Reverse decode produced a non-finite value for '{}' at point {}.\n",
+                               varNames[varIdx], pointIdx);
+                    exit(1);
+                }
+            }
+        }
+        fmt::print(stderr, "Reverse decode produced {} MPAS active-level points.\n",
+                   roundtrip_approx->npts);
+    }
+
+    void activateReverseMFAForSerialization()
+    {
+        if (!reverse_mfa)
+        {
+            fmt::print(stderr, "ERROR: Reverse MFA is not available for serialization.\n");
+            exit(1);
+        }
+        std::swap(mfa, reverse_mfa);
+        std::swap(input, approx);
+        std::swap(approx, roundtrip_approx);
     }
 
 

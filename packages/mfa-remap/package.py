@@ -26,6 +26,7 @@ class MfaRemap(CMakePackage):
     depends_on("mpi", type=("build", "link"))
     depends_on("hdf5@1.14+mpi+hl", type=("build", "link"))
     depends_on("highfive+mpi", type=("build", "link"))
+    depends_on("boost", type="build")
     depends_on("henson@master+python+mpi-wrappers", type=("build", "link"))
     depends_on(
         "moab@5.5.0~cgm~coupler~dagmc~debug~fbigeom~fortran+hdf5~irel"
