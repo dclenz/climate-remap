@@ -238,8 +238,7 @@ class RemapModels
         std::vector<std::vector<T>> allknots(domDim);
         for (int dim = 0; dim < domDim; dim++)
             allknots[dim] = reverse_mfa->var(0).tmesh.all_knots[dim];
-        if (!zknots.empty())
-            allknots[verticalDim] = reverse_mfa->pinKnots(zknots, degree);
+        allknots[verticalDim] = reverse_mfa->pinKnots(zknots, degree);
 
         fmt::print(stderr, "Reverse ROMS vertical interior knots: {}\n", mfa::print_vec(zknots));
         reverse_mfa->setKnots(allknots);

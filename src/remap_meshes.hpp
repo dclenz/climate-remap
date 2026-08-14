@@ -191,8 +191,6 @@ class RemapMeshes
 
     VectorX<T> sourceVertexMins() const { return coordinateBounds(sourceCoordinates_).first; }
     VectorX<T> sourceVertexMaxs() const { return coordinateBounds(sourceCoordinates_).second; }
-    VectorX<T> targetVertexMins() const { return coordinateBounds(targetCoordinates_).first; }
-    VectorX<T> targetVertexMaxs() const { return coordinateBounds(targetCoordinates_).second; }
 
   private:
     moab::Interface& interface(Database database)

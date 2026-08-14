@@ -208,7 +208,7 @@ int main(int argc, char** argv)
         block->verbose = config.verbose;
         block->varNames = config.variableNames;
         block->configureForRoundTrip();
-        block->initMOAB(localComm, config.domDim);
+        block->initMOAB(localComm);
         block->readTargetData<double>(cp, config.romsFile);
         block->readSourceData<double>(cp, config.mpasFile);
         block->readTargetDataFull<double>();
@@ -230,17 +230,15 @@ int main(int argc, char** argv)
     forward_serialization_time = MPI_Wtime() - forward_serialization_time;
 
     double reverse_time = MPI_Wtime();
-    master.foreach([&](RemapBlock* block, const diy::Master::ProxyWithLink& cp)
+    master.foreach([&](RemapBlock* block, const diy::Master::ProxyWithLink&)
     {
-        (void)cp;
         block->reverseRemap(reverseInfo);
         block->writeRoundtripResults("roundtrip_mpas.h5m", "roundtrip_metrics.csv");
     });
     reverse_time = MPI_Wtime() - reverse_time;
 
-    master.foreach([&](RemapBlock* block, const diy::Master::ProxyWithLink& cp)
+    master.foreach([&](RemapBlock* block, const diy::Master::ProxyWithLink&)
     {
-        (void)cp;
         block->activateReverseMFAForSerialization();
     });
     double reverse_serialization_time = MPI_Wtime();

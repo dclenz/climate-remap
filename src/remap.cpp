@@ -158,7 +158,7 @@ int main(int argc, char** argv)
     {
         b->verbose = verbose;
         b->varNames = varNames;
-        b->initMOAB(local, dom_dim);
+        b->initMOAB(local);
         b->readTargetData<double>(cp, romsfile);
         b->readSourceData<double>(cp, mpasfile);
         b->readTargetDataFull<double>();

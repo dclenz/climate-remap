@@ -26,10 +26,10 @@ class RemapDomain
         std::vector<std::string> variableNames;
         bool deterministicTargetPlane = false;
         bool combineScienceVariables = false;
-        int domainDimension = 0;
     };
 
     static constexpr int GeometryDimension = 3;
+    static constexpr int ParameterDimension = 3;
     static constexpr T EarthRadius = 6371220.0;
 
     RemapDomain(RemapMeshes<T>& meshes, Configuration configuration) :
@@ -50,10 +50,6 @@ class RemapDomain
     void readTargetData(const diy::Master::ProxyWithLink&, const std::string& filename)
     {
         meshes_.loadTarget(filename);
-        VectorX<T> mins = meshes_.targetVertexMins() * EarthRadius;
-        VectorX<T> maxs = meshes_.targetVertexMaxs() * EarthRadius;
-        if (configuration_.verbose >= 1)
-            mfa::print_bbox(mins, maxs, "Target Bounding");
 
         MatrixX<T> locations(meshes_.targetElements().size(), GeometryDimension);
         std::vector<V> coord(GeometryDimension);
@@ -74,12 +70,6 @@ class RemapDomain
     void readSourceData(const diy::Master::ProxyWithLink& cp, const std::string& filename)
     {
         requireState(targetSurfaceReady_, "Target surface must be read before source data.");
-        if (configuration_.domainDimension != 3)
-        {
-            fmt::print(stderr, "ERROR: Climate remapping requires a three-dimensional parameter domain.\n");
-            std::exit(1);
-        }
-
         meshes_.loadSource(filename);
         if (configuration_.verbose >= 1)
             targetBoundingSpace_.print("Target Bounding Space");
@@ -111,7 +101,7 @@ class RemapDomain
         computeSourceLevelInfo();
         computeSourceCellInfo();
         sourceInput_ = std::make_unique<mfa::PointSet<T>>(
-            configuration_.domainDimension, pointSetModelDimensions(), numSourceCells_);
+            ParameterDimension, pointSetModelDimensions(), numSourceCells_);
 
         using Database = typename RemapMeshes<T>::Database;
         moab::Tag sshTag = meshes_.sourceTag("timeDaily_avg_ssh");
@@ -211,7 +201,7 @@ class RemapDomain
         maxTargetHeight_ = std::numeric_limits<T>::lowest();
         targetHeights_.resize(elementCount * tagLength);
         targetInput_ = std::make_unique<mfa::PointSet<T>>(
-            configuration_.domainDimension, pointSetModelDimensions(), elementCount * tagLength);
+            ParameterDimension, pointSetModelDimensions(), elementCount * tagLength);
         std::vector<V> coord(GeometryDimension);
         VectorX<T> centroid(GeometryDimension);
         int i = 0;
@@ -245,8 +235,8 @@ class RemapDomain
         minHeight_ = std::min(minSourceHeight_, minTargetHeight_);
         maxHeight_ = std::max(maxSourceHeight_, maxTargetHeight_);
         requireState(maxHeight_ > minHeight_, "Source/target height range must be nonzero.");
-        MatrixX<T> sourceParams(sourceInput_->npts, configuration_.domainDimension);
-        MatrixX<T> targetParams(targetInput_->npts, configuration_.domainDimension);
+        MatrixX<T> sourceParams(sourceInput_->npts, ParameterDimension);
+        MatrixX<T> targetParams(targetInput_->npts, ParameterDimension);
         mfa::AffineMap<T> paramMap(totalBoundingSpace_);
         MatrixX<T> params2d;
         MatrixX<T> xyz = sourceInput_->domain.leftCols(GeometryDimension);

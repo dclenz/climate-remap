@@ -29,6 +29,7 @@ struct CBlock2 : public BlockBase<T>
     using Base::mfa;
 
     static constexpr int geomDim = RemapDomain<T>::GeometryDimension;
+    static constexpr int parameterDim = RemapDomain<T>::ParameterDimension;
 
     int verbose = 0;
     std::vector<std::string> varNames;
@@ -74,16 +75,19 @@ struct CBlock2 : public BlockBase<T>
         combineScienceVariables = true;
     }
 
-    void initMOAB(MPI_Comm communicator, int dimension)
+    void initMOAB(MPI_Comm communicator)
     {
-        (void)dimension;
+        if (dom_dim != parameterDim)
+        {
+            fmt::print(stderr, "ERROR: Climate remapping requires dom_dim={}.\n", parameterDim);
+            std::exit(1);
+        }
         remapMeshes = std::make_unique<RemapMeshes<T>>(communicator);
         typename RemapDomain<T>::Configuration configuration;
         configuration.verbose = verbose;
         configuration.variableNames = varNames;
         configuration.deterministicTargetPlane = useDeterministicTargetPlane;
         configuration.combineScienceVariables = combineScienceVariables;
-        configuration.domainDimension = dom_dim;
         remapDomain = std::make_unique<RemapDomain<T>>(*remapMeshes, std::move(configuration));
     }
 
@@ -119,7 +123,7 @@ struct CBlock2 : public BlockBase<T>
     {
         auto forwardApproximation = remapModels.applyForward(
             *mfa, remapDomain->sourceInput(), remapDomain->targetInput(), info,
-            dom_dim, geomDim, dumpMatrices, remapDomain->sourceLevelMeanHeights(),
+            parameterDim, geomDim, dumpMatrices, remapDomain->sourceLevelMeanHeights(),
             remapDomain->minHeight(), remapDomain->maxHeight());
 
         using Database = typename RemapMeshes<T>::Database;
@@ -206,7 +210,7 @@ struct CBlock2 : public BlockBase<T>
         remapModels.applyReverse(
             info, *approx, *input, remapDomain->targetHeights(),
             remapMeshes->targetElements().size(), locationTagLength,
-            remapDomain->minHeight(), remapDomain->maxHeight(), dom_dim, geomDim,
+            remapDomain->minHeight(), remapDomain->maxHeight(), parameterDim, geomDim,
             remapDomain->variableNames());
     }
 
