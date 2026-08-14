@@ -19,9 +19,9 @@
 
 #include    "opts.h"
 #include    "writer.hpp"
-#include    "cblock.hpp"
+#include    "cblock2.hpp"
 
-using B = CBlock<real_t>;
+using B = CBlock2<real_t>;
 
 // 3d point or vector
 struct vec3d

@@ -160,7 +160,6 @@ int main(int argc, char** argv)
         b->varNames = varNames;
         b->initMOAB(local, dom_dim);
         b->readTargetData<double>(cp, romsfile);
-        // const mfa::Bbox<real_t> sourceReadBbox(b->targetMins, b->targetMaxs);
         b->readSourceData<double>(cp, mpasfile);
         b->readTargetDataFull<double>();
     });
@@ -172,7 +171,6 @@ int main(int argc, char** argv)
     {
         // Customize remapper block
         b->dumpMatrices = false;
-        b->addBdryData = true;
 
         // Do the remapping
         b->remap(cp, mfa_info);
@@ -190,7 +188,6 @@ int main(int argc, char** argv)
     master.foreach([&](B* b, const diy::Master::ProxyWithLink& cp)
     {
         b->print_model(cp);
-        // b->print_source_modeling_errors();
     });
     fmt::print(stderr, "startup time          = {:.3} s.\n", init_time);
     fmt::print(stderr, "encoding time         = {:.3} s.\n", encode_time);

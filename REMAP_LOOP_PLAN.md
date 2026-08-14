@@ -334,3 +334,19 @@ The optimized and committed-baseline `roundtrip_metrics.csv` files compare byte-
 - Expanded `README.md` with the round-trip command, independent regularization controls, threading control, generated files, tag semantics, and ParaView filtering instructions.
 
 The managed build, both executable help paths, malformed-thread validation, Niskine smoke workflow, and ParaView H5M loading pass. The Niskine metrics CSV is byte-for-byte identical to the pre-refactor result. The canonical BoB run preserves selected-cell counts, exact coverage classes, and 4,221 scalar cell-eligibility flags.
+
+### 2026-08-13 Broad Modularization
+
+- Reduced `CBlock2` from more than 2,000 lines to a roughly 230-line DIY/`BlockBase` facade.
+- Added `RemapMeshes`, which uses RAII for separate source and target MOAB databases and centralizes checked mesh/tag operations.
+- Added `RemapDomain`, which owns prepared MPAS/ROMS point sets, source subset topology, extrusion geometry, parameterization, and coverage result state.
+- Added stateless `CoverageAnalyzer`, preserving exact candidate order, polygon-union arithmetic, horizontal tolerances, and conservative vertical support.
+- Added `RemapModels`, which owns reverse-model resources and centralizes forward/reverse knots, encoding, science decoding, finite validation, and model diagnostics.
+- Added `RemapOutput`, which owns all legacy and round-trip tags, H5M/VTK output, CSV accumulation, and ParaView-facing eligibility fields.
+- Replaced raw ownership in the extracted components with `std::unique_ptr`; `CBlock2` retains raw `BlockBase` pointers only at the required serialization boundary.
+- Added explicit lifecycle checks for mesh loading, target-before-source preparation, parameterization, coverage, and the terminal reverse-serialization transition.
+- Added MOAB tag width/type validation and rejected empty wet target selections.
+- Switched `write_vtk` to deserialize the active `CBlock2` facade rather than the obsolete `CBlock` implementation.
+- Removed dead bounding-box state/functions, unreachable target-vertex mode, stale parameter-clamping blocks, inactive boundary-data code, and invalid source-model error logic from the active implementation.
+
+Both Niskine workflows pass after modularization. `remap_loop` produces a byte-identical metrics CSV, while `mfa_remap` preserves target/source counts, finite values, legacy VTK files, and its MFA artifact. The canonical BoB metrics CSV is byte-identical to the matching pre-modularization run, and ParaView reads the expected coverage, scalar eligibility, and error arrays.

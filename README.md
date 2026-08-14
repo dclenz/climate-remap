@@ -137,6 +137,17 @@ The primary MPAS filtering tags in `roundtrip_mpas.h5m` are:
 
 Load `/Users/dlenz/workspace/moab_plugin/moab_h5m_reader.py` in ParaView 5.10, open `roundtrip_mpas.h5m`, and threshold `roundtrip_error_cell_eligible == 1` to display cells used by the error analysis. For level-specific plots, also threshold `roundtrip_error_eligible[k] == 1`.
 
+## Code Architecture
+
+The remapping implementation is split into multiple components:
+
+- `src/cblock2.hpp`: block class for DIY, workflow orchestration, and serialization state transitions.
+- `src/remap_meshes.hpp`: independent source/target MOAB ownership, mesh loading, ocean-cell filtering, and checked tag access.
+- `src/remap_domain.hpp`: MPAS selection and extrusion, ROMS profile construction, shared parameterization, and prepared-domain state.
+- `src/remap_coverage.hpp`: exact ROMS polygon-union coverage and per-level eligibility.
+- `src/remap_models.hpp`: forward/reverse MFA knot placement, fitting, decoding, and model diagnostics.
+- `src/remap_output.hpp`: legacy and round-trip MOAB tags, H5M/VTK output, CSV metrics, and ParaView-facing fields.
+
 ## Generated Files
 
 The legacy `mfa_remap` executable writes files such as `remap.mfa`, `remap_out.vtk`, `source_subset.vtk`, `reg-strength-*.txt`, and temporary `DIY.*` files in the current working directory. Run experiments from a dedicated output or scratch directory to keep the source checkout clean.
