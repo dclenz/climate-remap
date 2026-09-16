@@ -111,6 +111,8 @@ Forward and reverse regularization are independent:
 --regularization 1 --reverse_regularization 1
 ```
 
+Both strengths must be greater than zero.
+
 `MFA_NUM_THREADS` limits TBB worker concurrency when needed:
 
 ```bash
@@ -125,15 +127,16 @@ Use the canonical runner to keep numerical settings, source revision, input and
 executable hashes, and output hashes together:
 
 ```bash
-scripts/run-canonical-validation.sh regularized
-scripts/run-canonical-validation.sh unregularized
+scripts/run-canonical-validation.sh
+scripts/run-canonical-validation.sh 0.5
 ```
 
-The regularized configuration is the current default baseline. Each run is written
-to its own directory under `runs/` and includes `run-manifest.txt`. The runner
-refuses to overwrite a non-empty directory. See
-[`VALIDATION_BASELINES.md`](VALIDATION_BASELINES.md) for the two known baseline
-results and their provenance limitations.
+Regularization is required for canonical runs; the optional first argument is a
+strictly positive strength applied to both remap legs and defaults to `1`. Each run
+is written to a timestamped, strength-labeled directory under `runs/` and includes
+`run-manifest.txt`. The runner refuses to overwrite a non-empty directory. See
+[`VALIDATION_BASELINES.md`](VALIDATION_BASELINES.md) for the current reference
+result and its provenance limitations.
 
 ### Round-Trip Outputs
 

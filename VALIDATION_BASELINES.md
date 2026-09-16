@@ -1,46 +1,42 @@
 # Validation Baselines
 
-This ledger distinguishes numerical configurations that were previously described
-collectively as the canonical result. Both use the Bay of Bengal inputs, degree-2
-science models, `11 x 11 x 11` forward controls, `17 x 17 x 17` reverse controls,
-temperature and salinity, and the same coverage/eligibility rules.
+The supported canonical workflow always uses positive regularization. Its strength
+may vary between experiments and is part of each run's recorded provenance. The
+current reference result uses the Bay of Bengal inputs, degree-2 science models,
+`11 x 11 x 11` forward controls, `17 x 17 x 17` reverse controls, temperature and
+salinity, and regularization strength `1` on both legs.
 
 ## Known Results
 
-| Baseline | Forward / reverse regularization | Eligible points | Temperature bias | Temperature RMSE | Temperature max abs. | Salinity bias | Salinity RMSE | Salinity max abs. | Evidence |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| Unregularized exact-union | `0 / 0` | 210,667 | -0.0008287612 | 0.1965704585 | 1.41108667 | 0.0000991428 | 0.0880278759 | 0.685817743 | Repeated canonical runs recorded in `REMAP_LOOP_PLAN.md`; the retained `runs/run.log` is from this configuration. |
-| Regularized defaults | `1 / 1` | 210,667 | -0.0000915246 | 0.0156696743 | 0.344090204 | 0.0000139794 | 0.0149424929 | 0.238294726 | Retained `runs/roundtrip_metrics.csv`; produced after regularization became the default. |
+| Baseline | Forward / reverse regularization | Eligible points | Temperature bias | Temperature RMSE | Temperature max abs. | Salinity bias | Salinity RMSE | Salinity max abs. |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Reference | `1 / 1` | 210,667 | -0.0000915246 | 0.0156696743 | 0.344090204 | 0.0000139794 | 0.0149424929 | 0.238294726 |
 
-The regularized result is the current default baseline. The unregularized result is
-retained as a diagnostic comparison because it exposes the forward temperature
-overshoot discussed in the work record. Results from the two configurations must not
-be compared as if they came from identical settings.
-
-The historical files under `runs/` predate complete machine-readable provenance:
-the log and CSV represent different configurations, and hashes of their original
-inputs and executable were not captured. They should therefore be treated as
-supporting evidence, not as fully reproducible run bundles.
+The old flat `runs/` artifacts predated machine-readable provenance and were removed.
+The table preserves their regularized summary as a historical reference, not a
+fully reproducible run bundle. Future accepted results should be backed by a complete
+manifest-bearing run directory.
 
 ## Reproducing A Baseline
 
 Activate the managed environment, rebuild the installed develop package after source
-changes, and run one of:
+changes, and run with a positive regularization strength:
 
 ```bash
 source load-env.sh
 spack install
-scripts/run-canonical-validation.sh regularized
-scripts/run-canonical-validation.sh unregularized
+scripts/run-canonical-validation.sh
+scripts/run-canonical-validation.sh 0.5
 ```
 
 The runner refuses to overwrite a non-empty output directory. By default it writes
-to `runs/bob-regularized` or `runs/bob-unregularized`. An explicit empty output
-directory may be supplied as the second argument.
+to a timestamped run directory such as `runs/bob-20260916T183000Z-reg-1`.
+An explicit empty output directory may be supplied as the second argument. A zero or
+negative strength is rejected.
 
 Each run writes `run-manifest.txt` beside its outputs. The manifest records:
 
-- the selected baseline and complete numerical settings;
+- the complete numerical settings, including regularization strength;
 - start/end timestamps and process status;
 - Git branch, revision, and dirty state;
 - Spack environment and installed executable;

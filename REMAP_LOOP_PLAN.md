@@ -353,14 +353,15 @@ Both Niskine workflows pass after modularization. `remap_loop` produces a byte-i
 
 ### 2026-09-16 Validation Provenance
 
-- Separated the unregularized exact-union result from the later regularized-default
-  result in `VALIDATION_BASELINES.md`. The retained historical run log and metrics
-  CSV belong to those different configurations and are no longer described as one
-  canonical artifact set.
-- Added `scripts/run-canonical-validation.sh` with explicit `regularized` and
-  `unregularized` profiles.
+- Documented the regularized reference result in `VALIDATION_BASELINES.md` and
+  clarified that the earlier unregularized result is historical rather than a
+  supported baseline.
+- Added `scripts/run-canonical-validation.sh`, which requires positive
+  regularization and records the selected strength.
 - Added a sidecar manifest containing the Git revision and dirty state, numerical
   settings, executable and input SHA-256 hashes, timestamps, exact command, exit
   status, and generated-output hashes.
 - Expanded the executable settings banner to include degrees, regularization modes,
   geometry settings, and threading backend.
+- Removed the ambiguous flat `runs/` artifacts and the failed root-level `run.log`.
+  Future validation artifacts belong in manifest-bearing, run-specific directories.

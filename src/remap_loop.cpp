@@ -4,6 +4,7 @@
 
 #include <mfa/mfa.hpp>
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -104,6 +105,14 @@ bool validateOptions(const RoundTripOptions& config)
     {
         fmt::print(stderr, "ERROR: Forward and reverse control counts require one value or {} values.\n",
                    config.domDim);
+        return false;
+    }
+    if (!std::isfinite(config.forwardRegularization) ||
+        !std::isfinite(config.reverseRegularization) ||
+        config.forwardRegularization <= 0 || config.reverseRegularization <= 0)
+    {
+        fmt::print(stderr,
+                   "ERROR: Forward and reverse regularization strengths must both be positive.\n");
         return false;
     }
     return true;

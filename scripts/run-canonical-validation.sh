@@ -3,28 +3,26 @@
 set -euo pipefail
 
 usage() {
-    printf 'Usage: %s [regularized|unregularized] [output-directory]\n' "$0" >&2
+    printf 'Usage: %s [positive-regularization-strength] [output-directory]\n' "$0" >&2
 }
 
-profile="${1:-regularized}"
-case "${profile}" in
-    regularized)
-        forward_regularization=1
-        reverse_regularization=1
-        ;;
-    unregularized)
-        forward_regularization=0
-        reverse_regularization=0
-        ;;
-    *)
-        usage
-        exit 2
-        ;;
-esac
+regularization="${1:-1}"
+if ! awk -v value="${regularization}" \
+    'BEGIN { exit !(value ~ /^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$/ && value > 0) }'
+then
+    printf 'Regularization strength must be a positive number; received: %s\n' \
+        "${regularization}" >&2
+    usage
+    exit 2
+fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 project_root="$(cd -- "${script_dir}/.." && pwd -P)"
-output_dir="${2:-${project_root}/runs/bob-${profile}}"
+directory_strength="${regularization//./p}"
+directory_strength="${directory_strength//+}"
+directory_strength="${directory_strength//-/_}"
+run_timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+output_dir="${2:-${project_root}/runs/bob-${run_timestamp}-reg-${directory_strength}}"
 mpas_file="${project_root}/data/mpas_grid_tstep0.h5m"
 roms_file="${project_root}/data/roms_3d_projected_BoB.h5m"
 
@@ -70,7 +68,6 @@ start_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 {
     printf 'manifest_version=1\n'
     printf 'initial_status=running\n'
-    printf 'profile=%s\n' "${profile}"
     printf 'started_utc=%s\n' "${start_utc}"
     printf 'git_revision=%s\n' "${git_revision}"
     printf 'git_branch=%s\n' "${git_branch}"
@@ -85,16 +82,16 @@ start_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     printf 'roms_sha256=%s\n' "$(sha256_file "${roms_file}")"
     printf 'forward_degree=2\n'
     printf 'forward_controls=11,11,11\n'
-    printf 'forward_regularization=%s\n' "${forward_regularization}"
+    printf 'forward_regularization=%s\n' "${regularization}"
     printf 'forward_regularize_first_and_second=0\n'
     printf 'reverse_degree=2\n'
     printf 'reverse_controls=17,17,17\n'
-    printf 'reverse_regularization=%s\n' "${reverse_regularization}"
+    printf 'reverse_regularization=%s\n' "${regularization}"
     printf 'reverse_regularize_first_and_second=0\n'
     printf 'variables=timeDaily_avg_activeTracers_temperature_3d,timeDaily_avg_activeTracers_salinity_3d\n'
     printf 'mfa_num_threads=%s\n' "${MFA_NUM_THREADS:-unlimited}"
     printf 'command=%q --dom_dim 3 --vars_degree 2 --vars_nctrl 11 --reverse_vars_degree 2 --reverse_vars_nctrl 17 --regularization %q --reverse_regularization %q --reg1and2 0 --reverse_reg1and2 0 --varNames timeDaily_avg_activeTracers_temperature_3d --varNames timeDaily_avg_activeTracers_salinity_3d --mpasfile %q --romsfile %q\n' \
-        "${executable}" "${forward_regularization}" "${reverse_regularization}" \
+        "${executable}" "${regularization}" "${regularization}" \
         "${mpas_file}" "${roms_file}"
 } > "${manifest}"
 
@@ -113,8 +110,8 @@ set +e
         --varNames timeDaily_avg_activeTracers_salinity_3d \
         --mpasfile "${mpas_file}" \
         --romsfile "${roms_file}" \
-        --regularization "${forward_regularization}" \
-        --reverse_regularization "${reverse_regularization}"
+        --regularization "${regularization}" \
+        --reverse_regularization "${regularization}"
 ) 2>&1 | tee "${log}"
 run_status=${PIPESTATUS[0]}
 set -e

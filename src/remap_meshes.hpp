@@ -131,18 +131,13 @@ class RemapMeshes
         if (sourceLoaded_)
             fail("load a second source mesh");
         fmt::print(stderr, "RemapMeshes: Reading source file {}\n", filename);
-        require(source().create_meshset(moab::MESHSET_SET, sourceFileSet_),
-                "create source file set");
-        require(source().load_file(filename.c_str(), &sourceFileSet_),
-                "load source file");
-        require(source().get_entities_by_type(sourceFileSet_, moab::MBVERTEX, sourceVertices_),
-                "read source vertices");
-        require(source().get_entities_by_dimension(sourceFileSet_, 2, sourceElements_),
-                "read source elements");
+        require(source().create_meshset(moab::MESHSET_SET, sourceFileSet_), "create source file set");
+        require(source().load_file(filename.c_str(), &sourceFileSet_), "load source file");
+        require(source().get_entities_by_type(sourceFileSet_, moab::MBVERTEX, sourceVertices_), "read source vertices");
+        require(source().get_entities_by_dimension(sourceFileSet_, 2, sourceElements_), "read source elements");
 
         sourceCoordinates_.resize(sourceVertices_.size() * GeometryDimension);
-        require(source().get_coords(sourceVertices_, sourceCoordinates_.data()),
-                "read source coordinates");
+        require(source().get_coords(sourceVertices_, sourceCoordinates_.data()), "read source coordinates");
 
         sourceElementIndices_.clear();
         int index = 0;
