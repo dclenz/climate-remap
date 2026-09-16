@@ -258,7 +258,7 @@ MFA's sampled normal estimator produced slightly different source selections bet
 - Implemented conservative local vertical support, producing 210,667 eligible active levels in the canonical run.
 - Added `roundtrip_mpas.h5m` with coverage fraction/class, per-level eligibility, complete round-trip profiles, signed errors, and absolute errors.
 - Added `roundtrip_metrics.csv` with overall and per-level counts, bias, RMSE, maximum absolute error, persistent MPAS `GLOBAL_ID` and level at the maximum, and original/round-trip ranges.
-- The corrected authoritative canonical metrics are temperature RMSE `0.1965704585`, bias `-0.0008287612`, max absolute error `1.41108667`; salinity RMSE `0.0880278759`, bias `0.0000991428`, max absolute error `0.685817743`.
+- The repeated unregularized exact-union canonical metrics are temperature RMSE `0.1965704585`, bias `-0.0008287612`, max absolute error `1.41108667`; salinity RMSE `0.0880278759`, bias `0.0000991428`, max absolute error `0.685817743`.
 - Scripted ParaView plugin checks loaded `roundtrip_mpas.h5m` coverage, eligibility, and representative error components. Coverage ranges from 0 to 1, classes from 0 to 3, and error arrays expose the reported maxima.
 - A code review identified and prompted fixes for exact union coverage, loop-only deterministic plane behavior, stable IDs, finite checks, reverse settings, and reverse serialization.
 - Repeated the authoritative exact-union run after all fixes. Selection counts, coverage classes, eligible-point count, extrema locations, and every reported aggregate metric matched exactly.
@@ -350,3 +350,17 @@ The managed build, both executable help paths, malformed-thread validation, Nisk
 - Removed dead bounding-box state/functions, unreachable target-vertex mode, stale parameter-clamping blocks, inactive boundary-data code, and invalid source-model error logic from the active implementation.
 
 Both Niskine workflows pass after modularization. `remap_loop` produces a byte-identical metrics CSV, while `mfa_remap` preserves target/source counts, finite values, legacy VTK files, and its MFA artifact. The canonical BoB metrics CSV is byte-identical to the matching pre-modularization run, and ParaView reads the expected coverage, scalar eligibility, and error arrays.
+
+### 2026-09-16 Validation Provenance
+
+- Separated the unregularized exact-union result from the later regularized-default
+  result in `VALIDATION_BASELINES.md`. The retained historical run log and metrics
+  CSV belong to those different configurations and are no longer described as one
+  canonical artifact set.
+- Added `scripts/run-canonical-validation.sh` with explicit `regularized` and
+  `unregularized` profiles.
+- Added a sidecar manifest containing the Git revision and dirty state, numerical
+  settings, executable and input SHA-256 hashes, timestamps, exact command, exit
+  status, and generated-output hashes.
+- Expanded the executable settings banner to include degrees, regularization modes,
+  geometry settings, and threading backend.

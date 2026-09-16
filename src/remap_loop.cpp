@@ -177,8 +177,22 @@ int main(int argc, char** argv)
 
     const int pointDimension = 3 + config.variableNames.size();
     fmt::print(stderr, "--------- Round-Trip MFA Settings ----------\n");
+    fmt::print(stderr, "Forward degree: {}\n", config.forwardDegree);
     fmt::print(stderr, "Forward controls: {}\n", mfa::print_vec(config.forwardControlPoints));
+    fmt::print(stderr, "Forward regularization: {} (first_and_second={})\n",
+               config.forwardRegularization, config.forwardRegularizeFirstAndSecond);
+    fmt::print(stderr, "Reverse degree: {}\n", config.reverseDegree);
     fmt::print(stderr, "Reverse controls: {}\n", mfa::print_vec(config.reverseControlPoints));
+    fmt::print(stderr, "Reverse regularization: {} (first_and_second={})\n",
+               config.reverseRegularization, config.reverseRegularizeFirstAndSecond);
+    fmt::print(stderr, "Geometry degree: {}\n", config.geometryDegree);
+    fmt::print(stderr, "Geometry controls: {}\n", config.geometryControlPoints);
+#ifdef MFA_TBB
+    fmt::print(stderr, "MFA threading backend: TBB (MFA_NUM_THREADS={})\n",
+               requestedThreadCount ? requestedThreadCount : "unlimited");
+#else
+    fmt::print(stderr, "MFA threading backend: serial\n");
+#endif
     fmt::print(stderr, "Variables: {}\n", mfa::print_vec(config.variableNames));
     fmt::print(stderr, "MPAS file: {}\nROMS file: {}\n", config.mpasFile, config.romsFile);
 

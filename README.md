@@ -119,6 +119,22 @@ MFA_NUM_THREADS=4 "$MFA_REMAP_PATH/bin/remap_loop" ...
 
 Use `remap_loop --help` for the complete option list.
 
+### Reproducible Canonical Runs
+
+Use the canonical runner to keep numerical settings, source revision, input and
+executable hashes, and output hashes together:
+
+```bash
+scripts/run-canonical-validation.sh regularized
+scripts/run-canonical-validation.sh unregularized
+```
+
+The regularized configuration is the current default baseline. Each run is written
+to its own directory under `runs/` and includes `run-manifest.txt`. The runner
+refuses to overwrite a non-empty directory. See
+[`VALIDATION_BASELINES.md`](VALIDATION_BASELINES.md) for the two known baseline
+results and their provenance limitations.
+
 ### Round-Trip Outputs
 
 `remap_loop` writes:
@@ -127,6 +143,10 @@ Use `remap_loop --help` for the complete option list.
 - `roundtrip_mpas.h5m`: the selected MPAS mesh with round-trip fields, errors, coverage, and eligibility.
 - `roundtrip_metrics.csv`: overall and per-level bias, RMSE, maxima, and value ranges.
 - `forward_remap.mfa` and `reverse_remap.mfa`: serialized MFA models and point data.
+
+When invoked through the canonical runner, it also writes `run.log` and
+`run-manifest.txt`. Preserve the full run directory; a metrics CSV by itself does
+not identify the code, inputs, or numerical configuration that produced it.
 
 The primary MPAS filtering tags in `roundtrip_mpas.h5m` are:
 
